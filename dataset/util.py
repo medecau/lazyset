@@ -4,7 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from hashlib import sha1
 from typing import Any
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlencode, urlparse, urlunparse
 
 from sqlalchemy import Connection, ResultProxy
 from sqlalchemy.engine import Row
@@ -160,15 +160,17 @@ def normalize_column_name(name: str) -> str:
     if not isinstance(name, str):
         raise ValueError(f"{name!r} is not a valid column name.")
 
-    # limit to 63 characters
-    name = name.strip()[:63]
-    # column names can be 63 *bytes* max in postgresql
-    if isinstance(name, str):
-        while len(name.encode("utf-8")) >= 64:
-            name = name[: len(name) - 1]
-
+    # Validate the full stripped name *before* truncating: a trailing "."
+    # or "-" beyond byte 63 would otherwise be sliced off and slip through.
+    name = name.strip()
     if not len(name) or "." in name or "-" in name:
         raise ValueError(f"{name!r} is not a valid column name.")
+
+    # Column names can be 63 *bytes* max in postgresql. Limit to 63
+    # characters first, then trim any trailing multi-byte overflow.
+    name = name[:63]
+    while len(name.encode("utf-8")) >= 64:
+        name = name[: len(name) - 1]
     return name
 
 
@@ -190,17 +192,24 @@ def normalize_table_name(name: str) -> str:
 
 
 def safe_url(url: str) -> str:
-    """Remove password from printed connection URLs."""
+    """Remove password from printed connection URLs.
+
+    Only the userinfo portion of the netloc is rewritten, so a ``:pw@``
+    sequence that happens to appear in the path or query is left intact.
+    """
     parsed = urlparse(url)
-    if parsed.password is not None:
-        pwd = f":{parsed.password}@"
-        url = url.replace(pwd, ":*****@")
-    return url
+    if parsed.password is None:
+        return url
+    userinfo, _, host = parsed.netloc.rpartition("@")
+    user, _, _ = userinfo.partition(":")
+    return urlunparse(parsed._replace(netloc=f"{user}:*****@{host}"))
 
 
 def index_name(table: str, columns: list[str]) -> str:
     """Generate an artificial index name."""
-    sig = "||".join(columns)
+    # Netstring-style join so distinct column lists never collide:
+    # ["a", "b||c"] and ["a||b", "c"] must hash to different names.
+    sig = "".join(f"{len(c)}:{c}" for c in columns)
     key = sha1(sig.encode("utf-8")).hexdigest()[:16]
     return f"ix_{table}_{key}"
 
