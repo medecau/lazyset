@@ -193,7 +193,16 @@ class Table:
             self.create_index(keys)
         args, _ = self._keys_to_args(row, keys)
         if self.count(**args) == 0:
-            return self.insert(row, ensure=False)
+            # row was already synced above; avoid insert()'s own redundant
+            # _sync_columns pass by writing directly.
+            res = self.db.executable.execute(self.table.insert().values(row))
+            self.db._auto_commit()
+            if (
+                res.inserted_primary_key is not None
+                and len(res.inserted_primary_key) > 0
+            ):
+                return res.inserted_primary_key[0]
+            return True
         return False
 
     def insert_many(

@@ -45,6 +45,32 @@ def test_insert_ignore(table):
     assert len(table) == len(TEST_DATA) + 1, len(table)
 
 
+def test_insert_ignore_single_sync_columns_pass(table):
+    # insert_ignore already ran _sync_columns on the row; delegating to
+    # insert(row, ensure=False) redundantly re-ran it. has_column() is
+    # called once per row column inside _sync_columns, so a non-key column
+    # (not touched by create_index/count's own has_column calls) must be
+    # checked exactly once, not twice.
+    original_has_column = table.has_column
+    calls = []
+
+    def spy(column):
+        calls.append(column)
+        return original_has_column(column)
+
+    table.has_column = spy
+    try:
+        table.insert_ignore(
+            {"date": datetime(2011, 1, 5), "temperature": 3, "place": "NewPlace"},
+            ["place"],
+        )
+    finally:
+        del table.has_column
+
+    assert calls.count("date") == 1, calls
+    assert calls.count("temperature") == 1, calls
+
+
 def test_insert_ignore_missing_key_column_raises(table):
     # Previously, a `keys` column absent from both the row and the table
     # compiled the existence check to `false()` (always 0 matches), so this
