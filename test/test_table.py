@@ -1,11 +1,13 @@
 import logging
 import os
 import threading
+import time
 import warnings
 from datetime import datetime
 
 import pytest
 from sqlalchemy import Float
+from sqlalchemy.engine.reflection import Inspector
 from sqlalchemy.exc import ArgumentError
 from sqlalchemy.schema import Column
 from sqlalchemy.types import BIGINT, TEXT, Unicode
@@ -968,6 +970,50 @@ def test_has_index(db, table):
 
     missing = db.load_table("truly_missing_has_index_table_xyz")
     assert missing.has_index(["a"]) is False
+
+
+def test_has_index_thread_safe_cache(tmp_path):
+    # A file-backed DB, not the default `:memory:` one: SQLite in-memory
+    # databases are per-connection, and each thread gets its own connection,
+    # so concurrent threads would otherwise each see an empty database.
+    db = connect(f"sqlite:///{tmp_path / 'threads.db'}")
+    try:
+        tbl = db["has_index_thread_safe"]
+        tbl.insert({"a": 1})
+        tbl.create_index(["a"])
+
+        # A fresh Table instance with an empty in-memory _indexes cache, so
+        # every concurrent has_index() call misses the cache and races on
+        # the inspector read + cache append.
+        db._tables.pop("has_index_thread_safe", None)
+        fresh = db.load_table("has_index_thread_safe")
+
+        original_get_indexes = Inspector.get_indexes
+
+        def slow_get_indexes(self, *args, **kwargs):
+            result = original_get_indexes(self, *args, **kwargs)
+            time.sleep(0.05)
+            return result
+
+        Inspector.get_indexes = slow_get_indexes
+        results = []
+
+        def worker():
+            results.append(fresh.has_index(["a"]))
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        try:
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        finally:
+            Inspector.get_indexes = original_get_indexes
+
+        assert all(results)
+        assert len(fresh._indexes) == 1, fresh._indexes
+    finally:
+        db.close()
 
 
 def test_indexes_cache_invalidated_on_drop(table):

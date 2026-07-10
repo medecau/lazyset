@@ -674,26 +674,27 @@ class Table:
 
     def has_index(self, columns: Iterable[str]) -> bool:
         """Check if an index exists to cover the given ``columns``."""
-        if not self.exists:
-            return False
-        columns_ = {self._get_column_name(c) for c in ensure_strings(columns)}
-        if columns_ in self._indexes:
-            return True
-        for column in columns_:
-            if not self.has_column(column):
+        with self.db.lock:
+            if not self.exists:
                 return False
-        indexes = self.db.inspect.get_indexes(self.name, schema=self.db.schema)
-        for index in indexes:
-            idx_columns = index.get("column_names", [])
-            if len(columns_.intersection(idx_columns)) == len(columns_):
-                self._indexes.append(columns_)
+            columns_ = {self._get_column_name(c) for c in ensure_strings(columns)}
+            if columns_ in self._indexes:
                 return True
-        if self.table.primary_key is not None:
-            pk_columns = [c.name for c in self.table.primary_key.columns]
-            if len(columns_.intersection(pk_columns)) == len(columns_):
-                self._indexes.append(columns_)
-                return True
-        return False
+            for column in columns_:
+                if not self.has_column(column):
+                    return False
+            indexes = self.db.inspect.get_indexes(self.name, schema=self.db.schema)
+            for index in indexes:
+                idx_columns = index.get("column_names", [])
+                if len(columns_.intersection(idx_columns)) == len(columns_):
+                    self._indexes.append(columns_)
+                    return True
+            if self.table.primary_key is not None:
+                pk_columns = [c.name for c in self.table.primary_key.columns]
+                if len(columns_.intersection(pk_columns)) == len(columns_):
+                    self._indexes.append(columns_)
+                    return True
+            return False
 
     def create_index(
         self, columns: Sequence[str], name: str | None = None, **kw: object
