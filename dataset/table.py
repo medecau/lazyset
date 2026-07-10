@@ -731,7 +731,6 @@ class Table:
             log.debug(f"Column exists: {name}")
             return
         self._sync_table((Column(name, type, **kwargs),))  # type: ignore[arg-type]
-        self.db._auto_commit()
 
     def create_column_by_example(self, name: str, value: SQLWriteValue) -> None:
         """
