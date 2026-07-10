@@ -944,6 +944,18 @@ def test_upsert_many_batched_is_fast(db):
     assert elapsed < 2.0, elapsed
 
 
+def test_upsert_many_default_chunk_size_does_not_crash_on_sqlite(db):
+    # The batch existence check builds one OR-of-AND clause per distinct
+    # key; SQLite's default expression-tree depth limit is 1000, so a
+    # batch of >=999 distinct keys at the default chunk_size=1000 must not
+    # build one giant clause, or this raises "Expression tree is too large".
+    tbl = db["upsert_many_default_chunk_crash"]
+    rows = [{"id": i, "value": i} for i in range(1000)]
+    result = tbl.upsert_many(rows, "id")
+    assert result == 1000
+    assert len(tbl) == 1000
+
+
 def test_upsert_many_returns_count(db):
     tbl = db["upsert_many_returns_count"]
     tbl.insert_many([{"id": 1, "n": 1}])

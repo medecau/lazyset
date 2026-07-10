@@ -44,6 +44,10 @@ class Table:
     """Represents a table in a database and exposes common operations."""
 
     PRIMARY_DEFAULT = "id"
+    # upsert_many's existence check builds one OR-of-AND clause per distinct
+    # key; SQLite's default expression-tree depth limit is 1000, so this is
+    # capped independently of the caller's chunk_size to stay well under it.
+    _UPSERT_MANY_EXISTS_BATCH = 500
 
     def __init__(
         self,
@@ -456,8 +460,13 @@ class Table:
                 if self._check_ensure(ensure):
                     self.create_index(keys)
 
+                # Checked in its own sub-batches, independent of the
+                # caller's chunk_size (see _UPSERT_MANY_EXISTS_BATCH above).
                 existing_keys: set[tuple[SQLWriteValue, ...]] = set()
-                if deduped:
+                all_key_tuples = list(deduped.keys())
+                batch_size = self._UPSERT_MANY_EXISTS_BATCH
+                for start in range(0, len(all_key_tuples), batch_size):
+                    key_tuples = all_key_tuples[start : start + batch_size]
                     clause = or_(
                         *(
                             and_(
@@ -466,13 +475,13 @@ class Table:
                                     for k, v in zip(keys, key_tuple, strict=True)
                                 )
                             )
-                            for key_tuple in deduped
+                            for key_tuple in key_tuples
                         )
                     )
                     rp = self.db.executable.execute(
                         select(*(self.table.c[k] for k in keys)).where(clause)
                     )
-                    existing_keys = {tuple(result_row) for result_row in rp}
+                    existing_keys.update(tuple(result_row) for result_row in rp)
 
                 to_update = [
                     row_ for kt, row_ in deduped.items() if kt in existing_keys
