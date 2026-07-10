@@ -1,3 +1,4 @@
+import os
 import tempfile
 import threading
 from collections import OrderedDict
@@ -9,6 +10,12 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from dataset import connect
 
 from .sample_data import TEST_DATA
+
+# Backend detected at collection time so it can gate skipif marks, which are
+# evaluated before the ``db`` fixture exists.
+DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite://")
+IS_SQLITE = DATABASE_URL.startswith("sqlite")
+IS_MYSQL = "mysql" in DATABASE_URL
 
 
 def test_valid_database_url(db):
@@ -35,9 +42,11 @@ def test_create_table(db):
     assert "id" in table.table.c, table.table.c
 
 
+@pytest.mark.skipif(
+    IS_MYSQL or IS_SQLITE,
+    reason="MySQL and SQLite cannot create a table with no columns",
+)
 def test_create_table_no_ids(db):
-    if db.is_mysql or db.is_sqlite:
-        return
     table = db.create_table("foo_no_id", primary_id=False)
     assert table.table.name == "foo_no_id"
     assert len(table.table.columns) == 0, table.table.columns
@@ -75,9 +84,6 @@ def test_create_table_custom_id3(db):
     table.insert({pid: 124})
     assert table.find_one(int_id=123)[pid] == 123
     assert table.find_one(int_id=124)[pid] == 124
-    with pytest.raises(IntegrityError):
-        table.insert({pid: 123})
-    db.executable.rollback()
 
 
 def test_create_table_shorthand1(db):
@@ -90,8 +96,14 @@ def test_create_table_shorthand1(db):
     table.insert({"int_id": 124})
     assert table.find_one(int_id=123)["int_id"] == 123
     assert table.find_one(int_id=124)["int_id"] == 124
+
+
+def test_duplicate_primary_key_raises(db):
+    pid = "int_id"
+    table = db.create_table("dup_pk", primary_id=pid)
+    table.insert({pid: 123})
     with pytest.raises(IntegrityError):
-        table.insert({"int_id": 123})
+        table.insert({pid: 123})
     db.executable.rollback()
 
 
@@ -119,11 +131,11 @@ def test_with(db, table):
     assert len(table) == init_length
 
 
+@pytest.mark.skipif(
+    IS_MYSQL or IS_SQLITE,
+    reason="SQLite has flexible typing and MySQL casts implicitly, so neither raises",
+)
 def test_invalid_values(db, table):
-    if db.is_mysql or db.is_sqlite:
-        # SQLite has flexible typing and won't raise on type mismatches;
-        # MySQL does implicit type casting.
-        return
     with pytest.raises(SQLAlchemyError):
         table.insert({"date": True, "temperature": "wrong_value", "place": "tmp_place"})
 

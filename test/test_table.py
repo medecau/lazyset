@@ -1,6 +1,7 @@
 from datetime import datetime
 
 import pytest
+from sqlalchemy import Float
 from sqlalchemy.exc import ArgumentError
 from sqlalchemy.types import BIGINT, TEXT
 
@@ -41,20 +42,20 @@ def test_insert_ignore_all_key(table):
 
 
 def test_insert_json(table):
+    info = {"currency": "EUR", "language": "German", "population": 3292365}
     last_id = table.insert(
         {
             "date": datetime(2011, 1, 2),
             "temperature": -10,
             "place": "Berlin",
-            "info": {
-                "currency": "EUR",
-                "language": "German",
-                "population": 3292365,
-            },
+            "info": info,
         }
     )
     assert len(table) == len(TEST_DATA) + 1, len(table)
-    assert table.find_one(id=last_id)["place"] == "Berlin"
+    stored = table.find_one(id=last_id)
+    assert stored["place"] == "Berlin"
+    # The nested dict round-trips through the JSON column.
+    assert stored["info"] == info, stored["info"]
 
 
 def test_upsert(table):
@@ -100,54 +101,50 @@ def test_update_while_iter(table):
         row["foo"] = "bar"
         table.update(row, ["place", "date"])
     assert len(table) == len(TEST_DATA), len(table)
+    # Every row's new "foo" column was persisted.
+    assert table.count(foo="bar") == len(TEST_DATA), table.count(foo="bar")
 
 
-def test_weird_column_names(table):
-    with pytest.raises(ValueError):
-        table.insert(
-            {
-                "date": datetime(2011, 1, 2),
-                "temperature": -10,
-                "foo.bar": "Berlin",
-                "qux.bar": "Huhu",
-            }
-        )
-
-
-def test_cased_column_names(db):
+def test_cased_column_collapse(db):
     tbl = db["cased_column_names"]
     tbl.insert({"place": "Berlin"})
     tbl.insert({"Place": "Berlin"})
     tbl.insert({"PLACE ": "Berlin"})
+    # id + place: the three cased/spaced variants collapse to one column.
     assert len(tbl.columns) == 2, tbl.columns
+
+
+def test_case_insensitive_lookup(db):
+    tbl = db["cased_column_names"]
+    tbl.insert({"place": "Berlin"})
+    tbl.insert({"Place": "Berlin"})
+    tbl.insert({"PLACE ": "Berlin"})
     assert len(list(tbl.find(Place="Berlin"))) == 3
     assert len(list(tbl.find(place="Berlin"))) == 3
     assert len(list(tbl.find(PLACE="Berlin"))) == 3
 
 
-def test_invalid_column_names(db):
+@pytest.mark.parametrize("bad_name", [None, "", "-", "foo.bar"])
+def test_invalid_column_names(db, bad_name):
     tbl = db["weather"]
     with pytest.raises(ValueError):
-        tbl.insert({None: "banana"})
-
-    with pytest.raises(ValueError):
-        tbl.insert({"": "banana"})
-
-    with pytest.raises(ValueError):
-        tbl.insert({"-": "banana"})
+        tbl.insert({bad_name: "banana"})
 
 
-def test_delete(table):
-    table.insert({"date": datetime(2011, 1, 2), "temperature": -10, "place": "Berlin"})
-    original_count = len(table)
-    assert len(table) == len(TEST_DATA) + 1, len(table)
-    # Test bad use of API
+def test_delete_positional_raises(table):
+    # Passing a dict positionally is a misuse of the API.
     with pytest.raises(ArgumentError):
         table.delete({"place": "Berlin"})
-    assert len(table) == original_count, len(table)
-
-    assert table.delete(place="Berlin") is True, "should return 1"
     assert len(table) == len(TEST_DATA), len(table)
+
+
+def test_delete_filtered(table):
+    table.insert({"date": datetime(2011, 1, 2), "temperature": -10, "place": "Berlin"})
+    assert table.delete(place="Berlin") is True, "should return True"
+    assert len(table) == len(TEST_DATA), len(table)
+
+
+def test_delete_all(table):
     assert table.delete() is True, "should return non zero"
     assert len(table) == 0, len(table)
 
@@ -178,9 +175,12 @@ def test_count(table):
     assert length == 3, length
 
 
-def test_find(table):
+def test_find_by_filter(table):
     ds = list(table.find(place=TEST_CITY_1))
     assert len(ds) == 3, ds
+
+
+def test_find_pagination(table):
     ds = list(table.find(place=TEST_CITY_1, _limit=2))
     assert len(ds) == 2, ds
     ds = list(table.find(place=TEST_CITY_1, _limit=2, _step=1))
@@ -189,70 +189,76 @@ def test_find(table):
     assert len(ds) == 1, ds
     ds = list(table.find(_step=2))
     assert len(ds) == len(TEST_DATA), ds
+    ds = list(table.find(place=TEST_CITY_1, _offset=1))
+    assert len(ds) == 2, ds
+    ds = list(table.find(place=TEST_CITY_1, _limit=2, _offset=2))
+    assert len(ds) == 1, ds
+
+
+def test_find_order_by(table):
     ds = list(table.find(order_by=["temperature"]))
     assert ds[0]["temperature"] == -1, ds
     ds = list(table.find(order_by=["-temperature"]))
     assert ds[0]["temperature"] == 8, ds
+
+
+def test_find_clause_expression(table):
     ds = list(table.find(table.table.columns.temperature > 4))
     assert len(ds) == 3, ds
 
 
-def test_find_dsl(table):
-    ds = list(table.find(place={"like": "%lw%"}))
-    assert len(ds) == 3, ds
-    ds = list(table.find(temperature={">": 5}))
-    assert len(ds) == 2, ds
-    ds = list(table.find(temperature={">=": 5}))
-    assert len(ds) == 3, ds
-    ds = list(table.find(temperature={"<": 0}))
-    assert len(ds) == 1, ds
-    ds = list(table.find(temperature={"<=": 0}))
-    assert len(ds) == 2, ds
-    ds = list(table.find(temperature={"!=": -1}))
-    assert len(ds) == 5, ds
-    ds = list(table.find(temperature={"between": [5, 8]}))
-    assert len(ds) == 3, ds
-    ds = list(table.find(place={"=": "G€lway"}))
-    assert len(ds) == 3, ds
-    ds = list(table.find(place={"ilike": "%LwAy"}))
-    assert len(ds) == 3, ds
+@pytest.mark.parametrize(
+    "filt,expected",
+    [
+        ({"place": {"like": "%lw%"}}, 3),
+        ({"place": {"notlike": "%lw%"}}, 3),
+        ({"place": {"ilike": "%LwAy"}}, 3),
+        ({"place": {"notilike": "%LwAy"}}, 3),
+        ({"temperature": {">": 5}}, 2),
+        ({"temperature": {">=": 5}}, 3),
+        ({"temperature": {"<": 0}}, 1),
+        ({"temperature": {"<=": 0}}, 2),
+        ({"temperature": {"!=": -1}}, 5),
+        ({"temperature": {"between": [5, 8]}}, 3),
+        ({"temperature": {"in": [6, 8]}}, 2),
+        ({"temperature": {"notin": [-1, 0, 1]}}, 3),
+        ({"place": {"=": TEST_CITY_2}}, 3),
+    ],
+)
+def test_find_operator(table, filt, expected):
+    ds = list(table.find(**filt))
+    assert len(ds) == expected, ds
 
 
-def test_startswith_endswith(db):
+def _prefix_table(db):
     t = db["prefix_test"]
     t.insert({"org": "acme"})
     t.insert({"org": "acme_labs"})
     t.insert({"org": "other"})
     t.insert({"org": "admin"})
+    return t
 
-    # Basic startswith
+
+def test_startswith_endswith_basic(db):
+    t = _prefix_table(db)
     rows = list(t.find(org={"startswith": "acme"}))
     assert len(rows) == 2, rows
-
-    # Basic endswith
     rows = list(t.find(org={"endswith": "labs"}))
     assert len(rows) == 1, rows
 
-    # LIKE metacharacters must be escaped (CVE-style regression test)
-    rows = list(t.find(org={"startswith": "%"}))
-    assert len(rows) == 0, f"startswith % should match nothing, got {rows}"
 
-    rows = list(t.find(org={"startswith": "_"}))
-    assert len(rows) == 0, f"startswith _ should match nothing, got {rows}"
+def test_startswith_endswith_metachars_escaped_in_find(db):
+    t = _prefix_table(db)
+    # LIKE metacharacters must be escaped (CVE-style regression test).
+    assert len(list(t.find(org={"startswith": "%"}))) == 0
+    assert len(list(t.find(org={"startswith": "_"}))) == 0
+    assert len(list(t.find(org={"endswith": "%"}))) == 0
 
-    rows = list(t.find(org={"endswith": "%"}))
-    assert len(rows) == 0, f"endswith % should match nothing, got {rows}"
 
-    # Delete must not overmatch
+def test_startswith_endswith_metachars_escaped_in_delete(db):
+    t = _prefix_table(db)
     t.delete(org={"startswith": "%"})
     assert t.count() == 4, "delete with % startswith should not remove rows"
-
-
-def test_offset(table):
-    ds = list(table.find(place=TEST_CITY_1, _offset=1))
-    assert len(ds) == 2, ds
-    ds = list(table.find(place=TEST_CITY_1, _limit=2, _offset=2))
-    assert len(ds) == 1, ds
 
 
 def test_streamed_update(table):
@@ -261,13 +267,21 @@ def test_streamed_update(table):
     for row in table.find(place=TEST_CITY_1, _streamed=True, _step=1):
         row["temperature"] = -1
         table.update(row, ["id"])
+    # The streamed updates were persisted.
+    assert table.count(place=TEST_CITY_1, temperature=-1) == 3
 
 
-def test_distinct(table):
+def test_distinct_single_column(table):
     x = list(table.distinct("place"))
     assert len(x) == 2, x
+
+
+def test_distinct_multi_column(table):
     x = list(table.distinct("place", "date"))
     assert len(x) == 6, x
+
+
+def test_distinct_with_clause(table):
     x = list(
         table.distinct(
             "place",
@@ -277,6 +291,8 @@ def test_distinct(table):
     )
     assert len(x) == 4, x
 
+
+def test_distinct_with_filter(table):
     x = list(table.distinct("temperature", place=TEST_CITY_1))
     assert len(x) == 3, x
     x = list(table.distinct("temperature", place=[TEST_CITY_1, TEST_CITY_2]))
@@ -403,9 +419,7 @@ def test_update(table):
     )
     assert res, "update should return True"
     m = table.find_one(place=TEST_CITY_1, date=date)
-    assert m["temperature"] == -10, (
-        f"new temp. should be -10 but is {m['temperature']}"
-    )
+    assert m["temperature"] == -10, f"new temp. should be -10 but is {m['temperature']}"
 
 
 def test_create_column(db, table):
@@ -416,27 +430,20 @@ def test_create_column(db, table):
     assert "foo" in table.columns, table.columns
 
 
-def test_ensure_column(db, table):
-    flt = db.types.float
-    table.create_column_by_example("foo", 0.1)
-    assert "foo" in table.table.c, table.table.c
-    assert isinstance(table.table.c["foo"].type, flt), table.table.c["foo"].type
-    table.create_column_by_example("bar", 1)
-    assert "bar" in table.table.c, table.table.c
-    assert isinstance(table.table.c["bar"].type, BIGINT), table.table.c["bar"].type
-    table.create_column_by_example("pippo", "test")
-    assert "pippo" in table.table.c, table.table.c
-    assert isinstance(table.table.c["pippo"].type, TEXT), table.table.c["pippo"].type
-    table.create_column_by_example("bigbar", 11111111111)
-    assert "bigbar" in table.table.c, table.table.c
-    assert isinstance(table.table.c["bigbar"].type, BIGINT), table.table.c[
-        "bigbar"
-    ].type
-    table.create_column_by_example("littlebar", -11111111111)
-    assert "littlebar" in table.table.c, table.table.c
-    assert isinstance(table.table.c["littlebar"].type, BIGINT), table.table.c[
-        "littlebar"
-    ].type
+@pytest.mark.parametrize(
+    "name,example,expected_type",
+    [
+        ("colfloat", 0.1, Float),
+        ("colint", 1, BIGINT),
+        ("coltext", "test", TEXT),
+        ("colbig", 11111111111, BIGINT),
+        ("colneg", -11111111111, BIGINT),
+    ],
+)
+def test_ensure_column(table, name, example, expected_type):
+    table.create_column_by_example(name, example)
+    assert name in table.table.c, table.table.c
+    assert isinstance(table.table.c[name].type, expected_type), table.table.c[name].type
 
 
 def test_key_order(db, table):
