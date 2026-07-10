@@ -183,6 +183,10 @@ class Table:
         SQLAlchemy column type will be used. Otherwise, the type is
         guessed from the row value, defaulting to a simple unicode
         field.
+
+        With ``ensure`` on (the default), an index on ``keys`` is created
+        as a side effect. Pass ``ensure=False`` if you don't want that,
+        e.g. on a locked-down or very large table.
         ::
 
             data = dict(id=10, title='I am a banana!')
@@ -378,6 +382,10 @@ class Table:
 
         If rows with matching ``keys`` exist they will be updated, otherwise a
         new row is inserted in the table.
+
+        With ``ensure`` on (the default), an index on ``keys`` is created
+        as a side effect. Pass ``ensure=False`` if you don't want that,
+        e.g. on a locked-down or very large table.
         ::
 
             data = dict(id=10, title='I am a banana!')
