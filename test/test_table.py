@@ -783,6 +783,80 @@ def test_upsert_many(db):
     assert tbl.find_one(id=2)["weight"] == weight / 2
 
 
+def test_upsert_many_duplicate_keys_last_wins(db):
+    tbl = db["upsert_many_duplicate_keys"]
+    # Two rows sharing the same key in a single batch: a single up-front
+    # exists-check can't see one row's insert when classifying the next,
+    # so only the last occurrence's values must survive.
+    tbl.upsert_many([{"id": 1, "value": "first"}, {"id": 1, "value": "second"}], "id")
+    assert len(tbl) == 1
+    assert tbl.find_one(id=1)["value"] == "second"
+
+
+def test_upsert_many_duplicate_keys_last_wins_across_chunks(db):
+    tbl = db["upsert_many_duplicate_keys_chunks"]
+    # chunk_size=1 splits the duplicate pair across two batches: the
+    # second batch's exists-check must see the first batch's insert, same
+    # as the single-batch case above.
+    tbl.upsert_many(
+        [{"id": 1, "value": "first"}, {"id": 1, "value": "second"}],
+        "id",
+        chunk_size=1,
+    )
+    assert len(tbl) == 1
+    assert tbl.find_one(id=1)["value"] == "second"
+
+
+def test_upsert_many_composite_key(db):
+    tbl = db["upsert_many_composite_key"]
+    tbl.upsert_many(
+        [{"a": 1, "b": 1, "value": "x"}, {"a": 1, "b": 2, "value": "y"}],
+        ["a", "b"],
+    )
+    assert len(tbl) == 2
+
+    # Update the first pair and insert a brand-new pair in the same call.
+    tbl.upsert_many(
+        [{"a": 1, "b": 1, "value": "x-updated"}, {"a": 2, "b": 1, "value": "z"}],
+        ["a", "b"],
+    )
+    assert len(tbl) == 3
+    assert tbl.find_one(a=1, b=1)["value"] == "x-updated"
+    assert tbl.find_one(a=1, b=2)["value"] == "y"
+    assert tbl.find_one(a=2, b=1)["value"] == "z"
+
+
+def test_upsert_many_heterogeneous_columns_batched(db):
+    tbl = db["upsert_many_hetero_batched"]
+    tbl.insert_many([{"id": 1, "x": "x1", "y": "y1"}, {"id": 2, "x": "x2", "y": "y2"}])
+
+    # Regression check: the batched rewrite must still route through
+    # update_many's per-group SET clause (A1's fix), not NULL out columns
+    # missing from a given row.
+    tbl.upsert_many([{"id": 1, "x": "x1-new"}, {"id": 2, "y": "y2-new"}], "id")
+
+    row1 = tbl.find_one(id=1)
+    row2 = tbl.find_one(id=2)
+    assert row1["x"] == "x1-new"
+    assert row1["y"] == "y1"
+    assert row2["x"] == "x2"
+    assert row2["y"] == "y2-new"
+
+
+def test_upsert_many_batched_is_fast(db):
+    tbl = db["upsert_many_timing"]
+    rows = [{"id": i, "value": i} for i in range(1, 501)]
+
+    start = time.perf_counter()
+    tbl.upsert_many(rows, "id")
+    elapsed = time.perf_counter() - start
+
+    assert len(tbl) == 500
+    # Soft smoke check, not a strict perf gate: the batched rewrite should
+    # comfortably finish 500 new-row upserts well under a second.
+    assert elapsed < 2.0, elapsed
+
+
 def test_drop_operations(table):
     assert table._table is not None, "table shouldn't be dropped yet"
     table.drop()

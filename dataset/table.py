@@ -8,7 +8,7 @@ from sqlalchemy import false, func, select
 from sqlalchemy.exc import NoSuchTableError
 from sqlalchemy.schema import Column, Index
 from sqlalchemy.schema import Table as SQLATable
-from sqlalchemy.sql import and_, expression
+from sqlalchemy.sql import and_, expression, or_
 from sqlalchemy.sql.expression import (
     ClauseElement,
     ColumnElement,
@@ -369,10 +369,75 @@ class Table:
         See :py:meth:`upsert() <dataset.Table.upsert>` and
         :py:meth:`insert_many() <dataset.Table.insert_many>`.
         """
-        # Removing a bulk implementation in 5e09aba401. Doing this one by one
-        # is incredibly slow, but doesn't run into issues with column creation.
-        for row in rows:
-            self.upsert(row, keys, ensure=ensure, types=types)
+        # 5e09aba401 replaced a bulk implementation with a one-by-one loop,
+        # since doing it in bulk ran into column-creation issues. The batch
+        # below resolves that by union-syncing columns once per batch before
+        # classifying rows, mirroring insert_many's own pre-scan.
+        keys = ensure_strings(keys)
+
+        batch: list[WriteRow] = []
+        for index, row in enumerate(rows):
+            batch.append(row)
+
+            # Upsert when chunk_size is fulfilled or this is the last row
+            if len(batch) == chunk_size or index == len(rows) - 1:
+                # Last-wins dedup by key-tuple: a single up-front exists
+                # check can't see one row's insert when classifying the next
+                # row in the same batch, so only the last occurrence per key
+                # is ever written. A row that doesn't specify every key
+                # column at all (e.g. relying on an autoincrement id) has no
+                # real key identity to dedup on, so it always goes straight
+                # to insert, same as the row-by-row loop did.
+                deduped: dict[tuple[SQLWriteValue, ...], MutableRow] = {}
+                always_insert: list[MutableRow] = []
+                for row_ in batch:
+                    if all(k in row_ for k in keys):
+                        key_tuple = tuple(row_[k] for k in keys)
+                        deduped[key_tuple] = dict(row_)
+                    else:
+                        always_insert.append(dict(row_))
+
+                sample: MutableRow = {}
+                for synced_row in (*deduped.values(), *always_insert):
+                    for k, v in synced_row.items():
+                        if k not in sample:
+                            sample[k] = v
+                self._sync_columns(sample, ensure, types=types)
+
+                if self._check_ensure(ensure):
+                    self.create_index(keys)
+
+                existing_keys: set[tuple[SQLWriteValue, ...]] = set()
+                if deduped:
+                    clause = or_(
+                        *(
+                            and_(
+                                *(
+                                    self.table.c[k] == v
+                                    for k, v in zip(keys, key_tuple, strict=True)
+                                )
+                            )
+                            for key_tuple in deduped
+                        )
+                    )
+                    rp = self.db.executable.execute(
+                        select(*(self.table.c[k] for k in keys)).where(clause)
+                    )
+                    existing_keys = {tuple(result_row) for result_row in rp}
+
+                to_update = [
+                    row_ for kt, row_ in deduped.items() if kt in existing_keys
+                ]
+                to_insert = always_insert + [
+                    row_ for kt, row_ in deduped.items() if kt not in existing_keys
+                ]
+
+                if to_update:
+                    self.update_many(to_update, keys, len(to_update), ensure=False)
+                if to_insert:
+                    self.insert_many(to_insert, len(to_insert), ensure=False)
+
+                batch = []
 
     def delete(self, *clauses: ColumnElement[bool], **filters: SQLWriteValue) -> int:
         """Delete rows from the table.
