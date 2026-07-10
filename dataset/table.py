@@ -691,11 +691,10 @@ class Table:
                 if idx_columns[: len(columns_)] == list(columns_):
                     self._indexes.append(columns_)
                     return True
-            if self.table.primary_key is not None:
-                pk_columns = [c.name for c in self.table.primary_key.columns]
-                if pk_columns[: len(columns_)] == list(columns_):
-                    self._indexes.append(columns_)
-                    return True
+            pk_columns = [c.name for c in self.table.primary_key.columns]
+            if pk_columns[: len(columns_)] == list(columns_):
+                self._indexes.append(columns_)
+                return True
             return False
 
     def create_index(
