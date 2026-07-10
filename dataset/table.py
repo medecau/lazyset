@@ -498,6 +498,10 @@ class Table:
                 sync_columns[name] = Column(name, _type)
                 out[name] = value
         self._sync_table(list(sync_columns.values()))
+        if self._table is None:
+            raise DatasetError(
+                f"Cannot write to {self.name!r}: no columns to create it with."
+            )
         return out
 
     def _check_ensure(self, ensure: bool | None) -> bool:

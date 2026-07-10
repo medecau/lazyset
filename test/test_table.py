@@ -841,6 +841,19 @@ def test_load_missing_table_raises(db):
         tbl.insert({"a": 1})
 
 
+def test_insert_empty_row_on_deferred_table_raises(db):
+    # primary_id=False with no columns yet defers table creation; writing an
+    # empty row never gives it a column to be created with. This must raise
+    # a clear DatasetError, not a raw driver OperationalError.
+    tbl = db.create_table("deferred_columnless", primary_id=False)
+    with pytest.raises(
+        DatasetError,
+        match=r"^Cannot write to 'deferred_columnless': "
+        r"no columns to create it with\.$",
+    ):
+        tbl.insert({})
+
+
 @pytest.mark.skipif(not IS_SQLITE, reason="drop_column succeeds on non-SQLite backends")
 def test_drop_column_guards():
     # A standalone connection, not the shared `db` fixture: we close it
