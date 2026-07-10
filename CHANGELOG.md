@@ -13,6 +13,9 @@ changes must be reconstructed from revision history.*
   - **`insert`/`insert_ignore`/`upsert`**: Return type changed from `int | bool` to `Any` (primary keys can be any type)
   - **Removed `banal` dependency**: Replaced `ensure_list` with typed `ensure_strings` utility
   - **`update_many`**: Fixed mutation of input rows — rows are now copied before modification
+  - **`safe_url`**: Only the userinfo password is masked; a `:password@` sequence appearing in the path or query is no longer mangled
+  - **`normalize_column_name`**: Now rejects a column name whose only invalid character (`.` or `-`) lies past byte 63, instead of silently truncating-and-accepting it — charset validation runs before length truncation *(minor behavior change)*
+  - **`index_name`**: Auto-generated index names now use an injective column join, so distinct column sets no longer collide; generated names for auto-indexes change (cosmetic — names are never used for lookup)
   - **Dev tooling**: Added `mypy` to dev dependencies, `make lint` now runs both ruff and mypy
   - **Build system**: Migrated from setuptools to modern pyproject.toml with Hatchling (PEP 621)
   - **Linting**: Replaced flake8 with ruff for faster, more comprehensive linting
