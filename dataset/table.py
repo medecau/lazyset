@@ -219,11 +219,11 @@ class Table:
         # Sync table before inputting rows.
         sync_row: MutableRow = {}
         for row in rows:
-            # Only get non-existing columns.
-            sync_keys = list(sync_row.keys())
-            for key in [k for k in row if k not in sync_keys]:
-                # Get a sample of the new column(s) from the row.
-                sync_row[key] = row[key]
+            # Get a sample of the new column(s) from the row: dict membership
+            # is O(1), unlike testing against a rebuilt list every row.
+            for key in row:
+                if key not in sync_row:
+                    sync_row[key] = row[key]
         self._sync_columns(sync_row, ensure, types=types)
 
         # Get columns name list to be used for padding later.
