@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from .conftest import TEST_CITY_1
+from .sample_data import TEST_CITY_1
 
 
 class Constructor(dict):

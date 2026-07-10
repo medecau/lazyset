@@ -6,7 +6,7 @@ from sqlalchemy.types import BIGINT, TEXT
 
 from dataset import chunked
 
-from .conftest import TEST_CITY_1, TEST_DATA
+from .sample_data import TEST_CITY_1, TEST_CITY_2, TEST_DATA
 
 
 def test_insert(table):
@@ -173,7 +173,7 @@ def test_find_one(table):
 
 
 def test_count(table):
-    assert len(table) == 6, len(table)
+    assert len(table) == len(TEST_DATA), len(table)
     length = table.count(place=TEST_CITY_1)
     assert length == 3, length
 
@@ -277,16 +277,16 @@ def test_distinct(table):
     )
     assert len(x) == 4, x
 
-    x = list(table.distinct("temperature", place="B€rkeley"))
+    x = list(table.distinct("temperature", place=TEST_CITY_1))
     assert len(x) == 3, x
-    x = list(table.distinct("temperature", place=["B€rkeley", "G€lway"]))
+    x = list(table.distinct("temperature", place=[TEST_CITY_1, TEST_CITY_2]))
     assert len(x) == 6, x
 
 
 def test_insert_many(table):
     data = TEST_DATA * 100
     table.insert_many(data, chunk_size=13)
-    assert len(table) == len(data) + 6, (len(table), len(data))
+    assert len(table) == len(data) + len(TEST_DATA), (len(table), len(data))
 
 
 def test_chunked_insert(table):
@@ -294,7 +294,7 @@ def test_chunked_insert(table):
     with chunked.ChunkedInsert(table) as chunk_tbl:
         for item in data:
             chunk_tbl.insert(item)
-    assert len(table) == len(data) + 6, (len(table), len(data))
+    assert len(table) == len(data) + len(TEST_DATA), (len(table), len(data))
 
 
 def test_chunked_insert_callback(table):
@@ -309,7 +309,7 @@ def test_chunked_insert_callback(table):
         for item in data:
             chunk_tbl.insert(item)
     assert len(data) == n_items
-    assert len(table) == len(data) + 6
+    assert len(table) == len(data) + len(TEST_DATA)
 
 
 def test_update_many(db):

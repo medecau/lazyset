@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from dataset import connect
 
-from .conftest import TEST_DATA
+from .sample_data import TEST_DATA
 
 
 def test_valid_database_url(db):
