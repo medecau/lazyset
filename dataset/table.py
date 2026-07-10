@@ -891,6 +891,11 @@ class Table:
             # return all rows sorted by multiple columns (descending by year)
             results = table.find(order_by=['country', '-year'])
 
+        ``order_by``, along with ``_limit``, ``_offset``, ``_step`` and
+        ``_streamed``, are reserved parameter names: a column literally
+        named e.g. ``order_by`` can't be passed as an equality filter
+        through ``**kwargs``.
+
         You can also submit filters based on criteria other than equality,
         see :ref:`advanced_filters` for details.
 

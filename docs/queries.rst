@@ -45,6 +45,12 @@ endswith       String ends with
 Querying for a specific value on a column that does not exist on the table
 will return no results.
 
+``order_by``, ``_limit``, ``_offset``, ``_step`` and ``_streamed`` are
+reserved keyword arguments on :py:meth:`table.find() <dataset.Table.find>`.
+A column literally named one of these can't be passed as an equality
+filter through keyword arguments; use a positional SQLAlchemy core
+expression instead (see below).
+
 You can also pass `SQLAlchemy core expressions`_ directly into the
 :py:meth:`table.find() <dataset.Table.find>` method as positional arguments.
 Access the underlying SQLAlchemy table via ``table.table`` and its columns
