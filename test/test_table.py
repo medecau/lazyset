@@ -666,6 +666,13 @@ def test_update_many_heterogeneous_columns_across_chunks(db):
     assert row2["y"] == "y2-new"
 
 
+def test_update_many_missing_key_column_raises(db):
+    tbl = db["update_many_missing_key"]
+    tbl.insert_many([{"id": 1, "n": 1}])
+    with pytest.raises(DatasetError, match=r"^Row is missing key column: 'id'$"):
+        tbl.update_many([{"n": 2}], "id")
+
+
 def test_update_many_chunk_size_flush(db):
     tbl = db["update_many_chunk_flush"]
     tbl.insert_many([{"id": 1, "n": 1}, {"id": 2, "n": 2}])

@@ -311,6 +311,8 @@ class Table:
                     columns = frozenset(col for col in row_ if col not in keys)
                     renamed = dict(row_)
                     for key in keys:
+                        if key not in renamed:
+                            raise DatasetError(f"Row is missing key column: {key!r}")
                         renamed[f"_{key}"] = renamed[key]
                         renamed.pop(key)
                     groups.setdefault(columns, []).append(renamed)
