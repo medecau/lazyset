@@ -87,7 +87,10 @@ class Table:
         """
         if self._table is None:
             self._sync_table(())
-        assert self._table is not None, "_sync_table should ensure _table is set"
+        if self._table is None:
+            # Deferred columnless auto-create table: transient view until
+            # the first column is added.
+            return SQLATable(self.name, self.db.metadata, schema=self.db.schema)
         return self._table
 
     @property
@@ -411,8 +414,10 @@ class Table:
         """Lazy load, create or adapt the table structure in the database.
 
         This method guarantees that self._table will be set to a non-None value
-        after successful execution. If the table cannot be created or loaded,
-        it raises DatasetError.
+        after successful execution, unless the table would have no columns at
+        all (e.g. ``primary_id=False`` with no columns yet), in which case
+        creation is deferred and self._table is left as None. If the table
+        cannot be created or loaded, it raises DatasetError.
         """
         if self._table is None:
             # Load an existing table from the database.
@@ -424,22 +429,24 @@ class Table:
             # Keep the lock scope small because this is run very often.
             with self.db.lock:
                 self._threading_warn()
-                self._table = SQLATable(
-                    self.name, self.db.metadata, schema=self.db.schema
-                )
+                table = SQLATable(self.name, self.db.metadata, schema=self.db.schema)
                 if self._primary_id is not False:
-                    # This can go wrong on DBMS like MySQL and SQLite where
-                    # tables cannot have no columns.
                     column = Column(
                         self._primary_id,
                         self._primary_type,
                         primary_key=True,
                         autoincrement=self._primary_increment,
                     )
-                    self._table.append_column(column)
+                    table.append_column(column)
                 for column in columns:
                     if column.name != self._primary_id:
-                        self._table.append_column(column)
+                        table.append_column(column)
+                if not len(table.columns):
+                    # SQLite and MySQL reject "CREATE TABLE t ()", so defer
+                    # creation until the first column is added (dataset
+                    # creates tables lazily anyway).
+                    return
+                self._table = table
                 self._table.create(self.db.executable, checkfirst=True)
                 self._columns = None
                 self.db._auto_commit()
@@ -579,7 +586,10 @@ class Table:
         return args, row_
 
     def create_column(
-        self, name: str, type: ColumnType, **kwargs: object  # noqa: A002
+        self,
+        name: str,
+        type: ColumnType,
+        **kwargs: object,  # noqa: A002
     ) -> None:
         """Create a new column ``name`` of a specified type.
         ::

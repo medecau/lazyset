@@ -42,10 +42,6 @@ def test_create_table(db):
     assert "id" in table.table.c, table.table.c
 
 
-@pytest.mark.skipif(
-    IS_MYSQL or IS_SQLITE,
-    reason="MySQL and SQLite cannot create a table with no columns",
-)
 def test_create_table_no_ids(db):
     table = db.create_table("foo_no_id", primary_id=False)
     assert table.table.name == "foo_no_id"
@@ -132,8 +128,8 @@ def test_with(db, table):
 
 
 @pytest.mark.skipif(
-    IS_MYSQL or IS_SQLITE,
-    reason="SQLite has flexible typing and MySQL casts implicitly, so neither raises",
+    IS_MYSQL,
+    reason="MySQL casts implicitly, so it does not raise",
 )
 def test_invalid_values(db, table):
     with pytest.raises(SQLAlchemyError):
