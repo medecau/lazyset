@@ -36,6 +36,18 @@ changes must be reconstructed from revision history.*
       `WHERE NULL` vs `WHERE false()` (both exclude all rows), `fetchall` vs `fetchmany` batching,
       `checkfirst`/`autoincrement` defaults, WAL PRAGMA case-folding, `_indexes` cache poisoning.
     Re-triaging from scratch isn't needed for a future `mutmut run`; diff against this baseline.
+
+    **Update (post `Table` hardening pass)**: the fixes/rewrites above (`update_many`, `upsert_many`,
+    `insert_ignore`, `has_index`, `create_index`, `_sync_table`, `_reflect_table`, `distinct`, and
+    more) substantially grew `table.py`'s branch count, so a from-scratch `mutmut run` now generates
+    1204 candidate mutants (up from 333) with 126 survivors (up from 115 in raw count, but a smaller
+    proportion of the total). Of these, 73 sit in functions touched by this pass and were individually
+    re-triaged: 14 were genuine new gaps, closed with targeted tests (e.g. `insert_ignore`'s
+    untested new-row return value, `update_many`/`upsert_many`'s row-count accumulation across
+    multiple column-groups/batches, `update()`'s tolerant-missing-key-column path, `distinct()` on a
+    table that doesn't exist yet); the remaining 59 are dialect-guarded or behaviorally equivalent,
+    matching the categories above. The other 67 survivors sit in code this pass didn't touch and were
+    not individually re-reviewed — assumed to be the same pre-existing buckets, per the note above.
   - **Build system**: Migrated from setuptools to modern pyproject.toml with Hatchling (PEP 621)
   - **Linting**: Replaced flake8 with ruff for faster, more comprehensive linting
   - **CI/CD**: Updated GitHub Actions to use modern action versions (checkout@v4, setup-python@v5)

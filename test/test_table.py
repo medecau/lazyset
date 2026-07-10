@@ -165,6 +165,16 @@ def test_write_method_return_values(db, table):
         is False
     )
 
+    # insert_ignore() on a genuinely new row returns the inserted primary key.
+    new_pk = table.insert_ignore(
+        {"date": datetime(2011, 1, 6), "temperature": 2, "place": "NewCity"},
+        ["place"],
+    )
+    assert new_pk == len(TEST_DATA) + 2
+
+    # No primary key column: insert_ignore() also returns True for a new row.
+    assert no_pk_table.insert_ignore({"a": 2}, ["a"]) is True
+
     # upsert() that matches and updates existing row(s) returns True.
     assert (
         table.upsert(
@@ -511,6 +521,11 @@ def test_distinct_requires_column(table):
         list(table.distinct(place="Berlin"))
 
 
+def test_distinct_on_nonexistent_table(db):
+    missing = db.load_table("truly_missing_distinct_table_xyz")
+    assert list(missing.distinct("col")) == []
+
+
 def test_insert_many(table):
     data = TEST_DATA * 100
     table.insert_many(data, chunk_size=13)
@@ -721,6 +736,39 @@ def test_update_many_returns_count(db):
     assert result == 2
 
 
+def test_update_many_returns_count_across_column_groups(db):
+    # Two rows with different value-column sets land in separate groups
+    # within the same flush; the returned count must sum across all of
+    # them, not just the last group executed.
+    tbl = db["update_many_returns_count_groups"]
+    tbl.insert_many([{"id": 1, "x": "x1", "y": "y1"}, {"id": 2, "x": "x2", "y": "y2"}])
+    result = tbl.update_many([{"id": 1, "x": "x1-new"}, {"id": 2, "y": "y2-new"}], "id")
+    assert result == 2
+
+
+def test_update_many_chunk_size_flush_count(db):
+    tbl = db["update_many_chunk_flush_count"]
+    tbl.insert_many([{"id": i, "n": i} for i in range(4)])
+
+    conn = db.executable
+    original_execute = conn.execute
+    calls = []
+
+    def spy(*args, **kwargs):
+        calls.append(1)
+        return original_execute(*args, **kwargs)
+
+    conn.execute = spy
+    try:
+        tbl.update_many([{"id": i, "n": i * 10} for i in range(4)], "id", chunk_size=2)
+    finally:
+        del conn.execute
+
+    # 4 rows at chunk_size=2 must flush twice, not once per row and not
+    # once for the whole batch.
+    assert len(calls) == 2, calls
+
+
 def _write_row(tbl, method_name, row, keys, **kwargs):
     if method_name == "insert":
         tbl.insert(row, **kwargs)
@@ -903,6 +951,52 @@ def test_upsert_many_returns_count(db):
     assert result == 2  # one update, one insert
 
 
+def test_upsert_many_returns_count_duplicate_split_across_chunk(db):
+    # chunk_size=2 puts the duplicate id=1 pair in the first batch and the
+    # new id=2 row in a second batch; the duplicate must still collapse to
+    # one write, not be double-counted.
+    tbl = db["upsert_many_count_duplicate_chunk"]
+    result = tbl.upsert_many(
+        [{"id": 1, "value": "a"}, {"id": 1, "value": "b"}, {"id": 2, "value": "c"}],
+        "id",
+        chunk_size=2,
+    )
+    assert result == 2
+    assert tbl.find_one(id=1)["value"] == "b"
+
+
+def test_upsert_many_returns_count_across_multiple_batches(db):
+    # chunk_size=1 forces 4 separate batches: two updates, then two
+    # inserts. The returned count must accumulate across every batch, not
+    # just reflect the last one.
+    tbl = db["upsert_many_count_multi_batch"]
+    tbl.insert_many([{"id": 1, "n": 1}, {"id": 2, "n": 2}])
+    result = tbl.upsert_many(
+        [
+            {"id": 1, "n": 10},
+            {"id": 2, "n": 20},
+            {"id": 3, "n": 30},
+            {"id": 4, "n": 40},
+        ],
+        "id",
+        chunk_size=1,
+    )
+    assert result == 4
+
+
+def test_upsert_many_creates_index(db):
+    tbl = db["upsert_many_creates_index"]
+    tbl.upsert_many([{"a": 1}], ["a"])
+    assert tbl.has_index(["a"]) is True
+
+
+def test_upsert_many_ensure_false_skips_index_creation(db):
+    tbl = db["upsert_many_ensure_false_index"]
+    tbl.insert({"a": 1})
+    tbl.upsert_many([{"a": 2}], ["a"], ensure=False)
+    assert tbl.has_index(["a"]) is False
+
+
 def test_drop_operations(table):
     assert table._table is not None, "table shouldn't be dropped yet"
     table.drop()
@@ -1044,6 +1138,15 @@ def test_update(table):
     assert res == 1
     m = table.find_one(place=TEST_CITY_1, date=date)
     assert m["temperature"] == -10, f"new temp. should be -10 but is {m['temperature']}"
+
+
+def test_update_missing_key_column_returns_zero(table):
+    # Unlike update_many (which raises, see
+    # test_update_many_missing_key_column_raises), update()'s _keys_to_args
+    # tolerates a key column missing from the row by defaulting it to None,
+    # which then matches zero rows instead of raising.
+    result = table.update({"place": "Berlin"}, ["place", "date"])
+    assert result == 0
 
 
 def test_create_column(db, table):
