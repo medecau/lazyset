@@ -517,6 +517,12 @@ def test_insert_many(table):
     assert len(table) == len(data) + len(TEST_DATA), (len(table), len(data))
 
 
+def test_insert_many_returns_count(db):
+    tbl = db["insert_many_returns_count"]
+    result = tbl.insert_many([{"n": i} for i in range(5)], chunk_size=2)
+    assert result == 5
+
+
 def test_insert_many_chunk_size_flush(db):
     tbl = db["insert_many_chunk_flush"]
     tbl.insert({"n": 0})  # pre-create the "n" column so the sync step is a no-op
@@ -708,6 +714,13 @@ def test_update_many_chunk_size_flush(db):
     assert tbl.find_one(id=2)["n"] == 20
 
 
+def test_update_many_returns_count(db):
+    tbl = db["update_many_returns_count"]
+    tbl.insert_many([{"id": 1, "n": 1}, {"id": 2, "n": 2}, {"id": 3, "n": 3}])
+    result = tbl.update_many([{"id": 1, "n": 10}, {"id": 2, "n": 20}], "id")
+    assert result == 2
+
+
 def _write_row(tbl, method_name, row, keys, **kwargs):
     if method_name == "insert":
         tbl.insert(row, **kwargs)
@@ -881,6 +894,13 @@ def test_upsert_many_batched_is_fast(db):
     # Soft smoke check, not a strict perf gate: the batched rewrite should
     # comfortably finish 500 new-row upserts well under a second.
     assert elapsed < 2.0, elapsed
+
+
+def test_upsert_many_returns_count(db):
+    tbl = db["upsert_many_returns_count"]
+    tbl.insert_many([{"id": 1, "n": 1}])
+    result = tbl.upsert_many([{"id": 1, "n": 10}, {"id": 2, "n": 20}], "id")
+    assert result == 2  # one update, one insert
 
 
 def test_drop_operations(table):

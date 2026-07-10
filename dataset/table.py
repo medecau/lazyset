@@ -211,7 +211,7 @@ class Table:
         chunk_size: int = 1000,
         ensure: bool | None = None,
         types: dict[str, ColumnType] | None = None,
-    ) -> None:
+    ) -> int:
         """Add many rows at a time.
 
         This is significantly faster than adding them one by one. Per default
@@ -224,6 +224,8 @@ class Table:
 
             rows = [dict(name='Dolly')] * 10000
             table.insert_many(rows)
+
+        Returns the number of rows inserted.
         """
         # Sync table before inputting rows.
         sync_row: MutableRow = {}
@@ -238,6 +240,7 @@ class Table:
         # Get columns name list to be used for padding later.
         columns = sync_row.keys()
 
+        inserted = 0
         chunk: list[MutableRow] = []
         for index, row in enumerate(rows):
             chunk.append(dict(row))
@@ -247,7 +250,9 @@ class Table:
                 chunk = pad_chunk_columns(chunk, columns)
                 self.db.executable.execute(self.table.insert(), chunk)
                 self.db._auto_commit()
+                inserted += len(chunk)
                 chunk = []
+        return inserted
 
     def update(
         self,
@@ -293,7 +298,7 @@ class Table:
         chunk_size: int = 1000,
         ensure: bool | None = None,
         types: dict[str, ColumnType] | None = None,
-    ) -> None:
+    ) -> int:
         """Update many rows in the table at a time.
 
         This is significantly faster than updating them one by one. Per default
@@ -302,9 +307,12 @@ class Table:
 
         See :py:meth:`update() <dataset.Table.update>` for details on
         the other parameters.
+
+        Returns the number of rows matched.
         """
         keys = ensure_strings(keys)
 
+        updated = 0
         chunk: list[WriteRow] = []
         for index, row in enumerate(rows):
             chunk.append(row)
@@ -335,9 +343,25 @@ class Table:
                             {col: bindparam(col, required=False) for col in columns}
                         )
                     )
-                    self.db.executable.execute(stmt, group_rows)
+                    rp = self.db.executable.execute(stmt, group_rows)
+                    if rp.supports_sane_multi_rowcount():
+                        updated += rp.rowcount
+                    else:
+                        exists_clause = or_(
+                            *(
+                                and_(
+                                    *(
+                                        self.table.c[k] == group_row[f"_{k}"]
+                                        for k in keys
+                                    )
+                                )
+                                for group_row in group_rows
+                            )
+                        )
+                        updated += self.count(exists_clause)
                 self.db._auto_commit()
                 chunk = []
+        return updated
 
     def upsert(
         self,
@@ -370,13 +394,15 @@ class Table:
         chunk_size: int = 1000,
         ensure: bool | None = None,
         types: dict[str, ColumnType] | None = None,
-    ) -> None:
+    ) -> int:
         """
         Sorts multiple input rows into upserts and inserts. Inserts are passed
         to insert and upserts are updated.
 
         See :py:meth:`upsert() <dataset.Table.upsert>` and
         :py:meth:`insert_many() <dataset.Table.insert_many>`.
+
+        Returns the number of rows updated plus the number of rows inserted.
         """
         # 5e09aba401 replaced a bulk implementation with a one-by-one loop,
         # since doing it in bulk ran into column-creation issues. The batch
@@ -384,6 +410,8 @@ class Table:
         # classifying rows, mirroring insert_many's own pre-scan.
         keys = ensure_strings(keys)
 
+        updated = 0
+        inserted = 0
         batch: list[WriteRow] = []
         for index, row in enumerate(rows):
             batch.append(row)
@@ -442,11 +470,16 @@ class Table:
                 ]
 
                 if to_update:
-                    self.update_many(to_update, keys, len(to_update), ensure=False)
+                    updated += self.update_many(
+                        to_update, keys, len(to_update), ensure=False
+                    )
                 if to_insert:
-                    self.insert_many(to_insert, len(to_insert), ensure=False)
+                    inserted += self.insert_many(
+                        to_insert, len(to_insert), ensure=False
+                    )
 
                 batch = []
+        return updated + inserted
 
     def delete(self, *clauses: ColumnElement[bool], **filters: SQLWriteValue) -> int:
         """Delete rows from the table.

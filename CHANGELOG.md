@@ -13,8 +13,11 @@ changes must be reconstructed from revision history.*
   - **`insert`/`insert_ignore`/`upsert`**: Return type changed from `int | bool` to `Any` (primary keys can be any type)
   - **`update`**: Always returns the number of updated rows (`int`); removed the `return_count` parameter — the count is now returned unconditionally (return type was `bool | int`) *(breaking)*
   - **`delete`**: Now returns the number of deleted rows (`int`) instead of a bool *(breaking)*
+  - **`insert_many`/`update_many`/`upsert_many`**: Now return the number of rows affected (`int`) instead of `None`, matching their singular siblings (`insert`/`update`/`upsert`) *(breaking)*
   - **Removed `banal` dependency**: Replaced `ensure_list` with typed `ensure_strings` utility
   - **`update_many`**: Fixed mutation of input rows — rows are now copied before modification
+  - **`update_many`**: Fixed a bug where the SET clause accumulated every column seen across the whole call (and across chunks), NULLing out any column missing from a given row instead of leaving it untouched
+  - **`upsert_many`**: Rewritten as a batched partition-then-bulk operation (union-sync columns once per batch, single exists-check, delegate to `update_many`/`insert_many`) instead of a per-row loop — substantially faster on large inputs
   - **`safe_url`**: Only the userinfo password is masked; a `:password@` sequence appearing in the path or query is no longer mangled
   - **`normalize_column_name`**: Now rejects a column name whose only invalid character (`.` or `-`) lies past byte 63, instead of silently truncating-and-accepting it — charset validation runs before length truncation *(minor behavior change)*
   - **`index_name`**: Auto-generated index names now use an injective column join, so distinct column sets no longer collide; generated names for auto-indexes change (cosmetic — names are never used for lookup)
