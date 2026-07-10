@@ -140,12 +140,12 @@ def test_delete_positional_raises(table):
 
 def test_delete_filtered(table):
     table.insert({"date": datetime(2011, 1, 2), "temperature": -10, "place": "Berlin"})
-    assert table.delete(place="Berlin") is True, "should return True"
+    assert table.delete(place="Berlin") == 1, "should return 1"
     assert len(table) == len(TEST_DATA), len(table)
 
 
 def test_delete_all(table):
-    assert table.delete() is True, "should return non zero"
+    assert table.delete() == len(TEST_DATA), "should return non zero"
     assert len(table) == 0, len(table)
 
 
@@ -156,9 +156,7 @@ def test_repr(table):
 
 
 def test_delete_nonexist_entry(table):
-    assert table.delete(place="Berlin") is False, (
-        "entry not exist, should fail to delete"
-    )
+    assert table.delete(place="Berlin") == 0, "entry not exist, should fail to delete"
 
 
 def test_find_one(table):
@@ -460,7 +458,7 @@ def test_update(table):
     res = table.update(
         {"date": date, "temperature": -10, "place": TEST_CITY_1}, ["place", "date"]
     )
-    assert res, "update should return True"
+    assert res == 1
     m = table.find_one(place=TEST_CITY_1, date=date)
     assert m["temperature"] == -10, f"new temp. should be -10 but is {m['temperature']}"
 

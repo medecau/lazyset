@@ -11,6 +11,8 @@ changes must be reconstructed from revision history.*
   - **`QueryError`**: New exception subclass of `DatasetError` for invalid filter operations
   - **`primary_type`**: Changed from `Types` to `ColumnType` (SQLAlchemy `TypeEngine`) — the actual accepted type
   - **`insert`/`insert_ignore`/`upsert`**: Return type changed from `int | bool` to `Any` (primary keys can be any type)
+  - **`update`**: Always returns the number of updated rows (`int`); removed the `return_count` parameter — the count is now returned unconditionally (return type was `bool | int`) *(breaking)*
+  - **`delete`**: Now returns the number of deleted rows (`int`) instead of a bool *(breaking)*
   - **Removed `banal` dependency**: Replaced `ensure_list` with typed `ensure_strings` utility
   - **`update_many`**: Fixed mutation of input rows — rows are now copied before modification
   - **`safe_url`**: Only the userinfo password is masked; a `:password@` sequence appearing in the path or query is no longer mangled

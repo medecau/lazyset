@@ -246,8 +246,7 @@ class Table:
         keys: Sequence[str],
         ensure: bool | None = None,
         types: dict[str, ColumnType] | None = None,
-        return_count: bool = False,
-    ) -> bool | int:
+    ) -> int:
         """Update a row in the table.
 
         The update is managed via the set of column names stated in ``keys``:
@@ -263,6 +262,8 @@ class Table:
         If keys in ``row`` update columns not present in the table, they will
         be created based on the settings of ``ensure`` and ``types``, matching
         the behavior of :py:meth:`insert() <dataset.Table.insert>`.
+
+        Returns the number of rows matched by ``keys``.
         """
         row = self._sync_columns(row, ensure, types=types)
         args, row = self._keys_to_args(row, keys)
@@ -274,9 +275,7 @@ class Table:
         self.db._auto_commit()
         if rp.supports_sane_rowcount():
             return rp.rowcount
-        if return_count:
-            return self.count(clause)
-        return False
+        return self.count(clause)
 
     def update_many(
         self,
@@ -342,7 +341,7 @@ class Table:
         row = self._sync_columns(row, ensure, types=types)
         if self._check_ensure(ensure):
             self.create_index(keys)
-        row_count = self.update(row, keys, ensure=False, return_count=True)
+        row_count = self.update(row, keys, ensure=False)
         if row_count == 0:
             return self.insert(row, ensure=False)
         return True
@@ -367,7 +366,7 @@ class Table:
         for row in rows:
             self.upsert(row, keys, ensure=ensure, types=types)
 
-    def delete(self, *clauses: ColumnElement[bool], **filters: SQLWriteValue) -> bool:
+    def delete(self, *clauses: ColumnElement[bool], **filters: SQLWriteValue) -> int:
         """Delete rows from the table.
 
         Keyword arguments can be used to add column-based filters. The filter
@@ -377,14 +376,16 @@ class Table:
             table.delete(place='Berlin')
 
         If no arguments are given, all records are deleted.
+
+        Returns the number of deleted rows.
         """
         if not self.exists:
-            return False
+            return 0
         clause = self._args_to_clause(filters, clauses=clauses)
         stmt = self.table.delete().where(clause)
         rp = self.db.executable.execute(stmt)
         self.db._auto_commit()
-        return rp.rowcount > 0
+        return rp.rowcount
 
     def _reflect_table(self) -> None:
         """Load the tables definition from the database."""
