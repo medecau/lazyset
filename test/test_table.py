@@ -972,6 +972,23 @@ def test_has_index(db, table):
     assert missing.has_index(["a"]) is False
 
 
+def test_has_index_composite_prefix(db):
+    tbl = db["has_index_composite"]
+    tbl.insert({"a": 1, "b": 2})
+    tbl.create_index(["a", "b"])
+
+    assert tbl.has_index(["a"]) is True, "leading column is a real prefix"
+    assert tbl.has_index(["b"]) is False, "trailing column alone is not a prefix"
+
+    # Since ["b"] isn't covered by the composite index, create_index must
+    # actually create a second, single-column index for it.
+    tbl.create_index(["b"])
+    assert tbl.has_index(["b"]) is True
+
+    indexes = tbl.db.inspect.get_indexes("has_index_composite")
+    assert len(indexes) == 2, indexes
+
+
 def test_has_index_thread_safe_cache(tmp_path):
     # A file-backed DB, not the default `:memory:` one: SQLite in-memory
     # databases are per-connection, and each thread gets its own connection,

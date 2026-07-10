@@ -59,7 +59,7 @@ class Table:
         self.name = normalize_table_name(table_name)
         self._table: SQLATable | None = None
         self._columns: dict[str, str] | None = None
-        self._indexes: list[set[str]] = []
+        self._indexes: list[tuple[str, ...]] = []
         self._primary_id: str | Literal[False] = (
             primary_id if primary_id is not None else self.PRIMARY_DEFAULT
         )
@@ -677,7 +677,9 @@ class Table:
         with self.db.lock:
             if not self.exists:
                 return False
-            columns_ = {self._get_column_name(c) for c in ensure_strings(columns)}
+            columns_ = tuple(
+                dict.fromkeys(self._get_column_name(c) for c in ensure_strings(columns))
+            )
             if columns_ in self._indexes:
                 return True
             for column in columns_:
@@ -686,12 +688,12 @@ class Table:
             indexes = self.db.inspect.get_indexes(self.name, schema=self.db.schema)
             for index in indexes:
                 idx_columns = index.get("column_names", [])
-                if len(columns_.intersection(idx_columns)) == len(columns_):
+                if idx_columns[: len(columns_)] == list(columns_):
                     self._indexes.append(columns_)
                     return True
             if self.table.primary_key is not None:
                 pk_columns = [c.name for c in self.table.primary_key.columns]
-                if len(columns_.intersection(pk_columns)) == len(columns_):
+                if pk_columns[: len(columns_)] == list(columns_):
                     self._indexes.append(columns_)
                     return True
             return False
