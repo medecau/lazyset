@@ -714,7 +714,7 @@ class Table:
 
             for column in columns:
                 if not self.has_column(column):
-                    return
+                    raise DatasetError(f"No such column: {column}")
 
             if not self.has_index(columns):
                 self._threading_warn()

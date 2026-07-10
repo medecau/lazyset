@@ -45,6 +45,17 @@ def test_insert_ignore(table):
     assert len(table) == len(TEST_DATA) + 1, len(table)
 
 
+def test_insert_ignore_missing_key_column_raises(table):
+    # Previously, a `keys` column absent from both the row and the table
+    # compiled the existence check to `false()` (always 0 matches), so this
+    # silently inserted a duplicate row on every call. create_index() now
+    # raises before that check ever runs.
+    before = len(table)
+    with pytest.raises(DatasetError, match=r"^No such column: nonexistent_col$"):
+        table.insert_ignore({"place": "Berlin"}, ["nonexistent_col"])
+    assert len(table) == before
+
+
 def test_insert_ignore_all_key(table):
     for _i in range(0, 4):
         table.insert_ignore(
@@ -970,6 +981,11 @@ def test_create_index(table):
     assert len(matched) == 1, indexes
     assert matched[0]["column_names"] == ["place"]
     assert table.has_index(["place"]) is True
+
+
+def test_create_index_missing_column_raises(table):
+    with pytest.raises(DatasetError, match=r"^No such column: nonexistent_col$"):
+        table.create_index(["nonexistent_col"])
 
 
 def test_create_index_requires_existing_table(db):
