@@ -459,6 +459,15 @@ def test_distinct_limit_offset_and_missing_column(table):
         list(table.distinct("nonexistent_col"))
 
 
+def test_distinct_requires_column(table):
+    # Filter-only call, no column name: same misuse class as an unknown
+    # column, so it must raise rather than silently return no rows.
+    with pytest.raises(
+        DatasetError, match=r"^distinct\(\) requires at least one column name$"
+    ):
+        list(table.distinct(place="Berlin"))
+
+
 def test_insert_many(table):
     data = TEST_DATA * 100
     table.insert_many(data, chunk_size=13)

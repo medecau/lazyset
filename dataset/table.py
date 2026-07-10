@@ -875,7 +875,7 @@ class Table:
 
         clause = self._args_to_clause(kwargs, clauses=clauses)
         if not len(columns):
-            return ResultIter(None, row_type=self.db.row_type)
+            raise DatasetError("distinct() requires at least one column name")
 
         q = (
             expression.select(*columns)
