@@ -22,6 +22,7 @@ changes must be reconstructed from revision history.*
   - **`normalize_column_name`**: Now rejects a column name whose only invalid character (`.` or `-`) lies past byte 63, instead of silently truncating-and-accepting it — charset validation runs before length truncation *(minor behavior change)*
   - **`index_name`**: Auto-generated index names now use an injective column join, so distinct column sets no longer collide; generated names for auto-indexes change (cosmetic — names are never used for lookup)
   - **`create_table(primary_id=False)`**: A columnless table now defers creation until the first column is added, instead of eagerly emitting `CREATE TABLE t ()` — this previously failed on SQLite and MySQL; PostgreSQL now behaves the same way for consistency *(minor behavior change)*
+  - **Known limitation (documented, not new)**: on SQLite and MySQL, schema DDL (table/column creation) is not transactional. Run inside an explicit `db.begin()`, it commits immediately and is not undone by a later `rollback()`, even single-threaded.
   - **Dev tooling**: Added `mypy` to dev dependencies, `make lint` now runs both ruff and mypy
   - **Mutation testing**: Added `mutmut` (dev-only dependency) and ~50 targeted tests, closing
     SQLite-killable mutation survivors from 333 to 115. The remaining survivors fall into two

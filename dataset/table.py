@@ -547,6 +547,11 @@ class Table:
         all (e.g. ``primary_id=False`` with no columns yet), in which case
         creation is deferred and self._table is left as None. If the table
         cannot be created or loaded, it raises DatasetError.
+
+        Known limitation: on SQLite and MySQL, the DDL run here (CREATE
+        TABLE / ADD COLUMN) is not transactional. If this runs inside an
+        explicit ``db.begin()``, it commits immediately regardless, and a
+        later ``rollback()`` will not undo it — even single-threaded.
         """
         if self._table is None:
             # Load an existing table from the database.
