@@ -814,7 +814,8 @@ class Table:
     ) -> None:
         """Create an index to speed up queries on a table.
 
-        If no ``name`` is given a random name is created.
+        If no ``name`` is given, a deterministic name is generated from the
+        table and column names.
         ::
 
             table.create_index(['name', 'country'])
