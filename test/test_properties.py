@@ -10,6 +10,7 @@ avoids the function-scoped-fixture health-check that ``@given`` triggers on
 DB-backed tests.
 """
 
+import re
 import string
 from datetime import date, datetime
 from urllib.parse import parse_qs, urlparse
@@ -92,6 +93,23 @@ def test_index_name_distinct_for_ambiguous_columns():
     assert index_name("t", ["a", "b||c"]) != index_name("t", ["a||b", "c"])
 
 
+def test_normalize_error_messages():
+    """Anchored messages pin the exact wording, not just that *some* error fires."""
+    with pytest.raises(ValueError, match=r"^123 is not a valid column name\.$"):
+        normalize_column_name(123)  # type: ignore[arg-type]
+
+    long_name = "a" * 63 + "."
+    expected = re.escape(f"{long_name!r} is not a valid column name.")
+    with pytest.raises(ValueError, match=f"^{expected}$"):
+        normalize_column_name(long_name)
+
+    with pytest.raises(ValueError, match=r"^Invalid table name: 123$"):
+        normalize_table_name(123)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match=r"^Invalid table name: ''$"):
+        normalize_table_name("  ")
+
+
 # ---------------------------------------------------------------------------
 # normalize_column_name
 # ---------------------------------------------------------------------------
@@ -125,6 +143,17 @@ def test_normalize_column_name_rejects_blank(s):
         normalize_column_name(s)
 
 
+def test_normalize_column_name_byte_boundary():
+    """A name that is 63 chars but 64 *bytes* must lose exactly the overflow char."""
+    name = "a" * 62 + "é"
+    assert len(name) == 63
+    assert len(name.encode("utf-8")) == 64
+
+    out = normalize_column_name(name)
+    assert out == "a" * 62
+    assert len(out.encode("utf-8")) == 62
+
+
 # ---------------------------------------------------------------------------
 # normalize_column_key
 # ---------------------------------------------------------------------------
@@ -144,6 +173,11 @@ def test_normalize_column_key_invariants(x):
 
 def test_normalize_column_key_none():
     assert normalize_column_key(None) is None
+
+
+def test_normalize_column_key_exact():
+    assert normalize_column_key(123) is None  # type: ignore[arg-type]
+    assert normalize_column_key("a b") == "AB"
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +291,22 @@ def test_safe_url_no_password_is_noop(host, path):
     assert safe_url(url) == url
 
 
+def test_safe_url_userinfo_special_chars():
+    """A password containing ':' and '@' must not confuse the manual netloc split.
+
+    The rewrite re-splits ``netloc`` by hand (``rpartition("@")`` then
+    ``partition(":")``) instead of trusting ``urlparse``'s own username/
+    password properties, so it needs its own coverage for the partition
+    direction on both delimiters.
+    """
+    url = "postgresql://user:pa:ss@word@host:5432/db"
+    out = safe_url(url)
+    assert out == "postgresql://user:*****@host:5432/db"
+    parsed = urlparse(out)
+    assert parsed.username == "user"
+    assert parsed.hostname == "host"
+
+
 # ---------------------------------------------------------------------------
 # index_name
 # ---------------------------------------------------------------------------
@@ -280,6 +330,11 @@ def test_index_name_format(table, cols):
 def test_index_name_distinct_column_lists(a, b):
     assume(a != b)
     assert index_name("t", a) != index_name("t", b)
+
+
+def test_index_name_exact_value():
+    # Precomputed sha1("1:a1:b")[:16] pins the netstring join separator.
+    assert index_name("t", ["a", "b"]) == "ix_t_95253b90414f24c6"
 
 
 # ---------------------------------------------------------------------------

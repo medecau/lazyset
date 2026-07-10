@@ -5,9 +5,12 @@ from collections import OrderedDict
 from datetime import datetime
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from dataset import connect
+from dataset.database import Database
+from dataset.util import ResultIter
 
 from .sample_data import TEST_CITY_1, TEST_DATA
 
@@ -20,6 +23,10 @@ IS_MYSQL = "mysql" in DATABASE_URL
 
 def test_valid_database_url(db):
     assert db.url
+
+
+def test_database_repr(db):
+    assert repr(db) == f"<Database({db.url})>"
 
 
 def test_database_url_query_string(db):
@@ -246,3 +253,157 @@ def test_connect_no_ensure_schema():
     tbl = db.get_table("any_table")
     assert tbl.name == "any_table"
     db.close()
+
+
+def test_result_iter_attributes():
+    db = connect()
+    conn = db.executable
+    rp = conn.execute(text("SELECT 1 AS a, 2 AS b"))
+    it = ResultIter(rp, connection=conn)
+    assert it.result_proxy is rp
+    assert it.keys == ["a", "b"]
+    assert dict(next(it)) == {"a": 1, "b": 2}
+    assert it._conn is conn
+    it.close()
+    it.close()  # closing twice must not raise
+    db.close()
+
+
+def test_result_iter_closed_result():
+    db = connect()
+    # DDL statements return a result proxy that raises ResourceClosedError
+    # on .keys(); ResultIter must fall back to an empty iterator.
+    it = db.query("CREATE TABLE result_iter_ddl (id INTEGER)")
+    assert it.keys == []
+    assert list(it) == []
+    db.close()
+
+
+@pytest.mark.parametrize("key", ["schema", "searchpath"])
+def test_schema_extracted_from_url(key):
+    db = connect(f"sqlite:///:memory:/?{key}=myschema")
+    assert db.schema == "myschema"
+    db.close()
+
+
+def test_dialect_flags(db):
+    assert db.is_sqlite is True
+    assert db.is_postgres is False
+    assert db.is_mysql is False
+
+
+def test_sqlite_wal_mode_for_file_db():
+    with tempfile.NamedTemporaryFile(suffix=".db") as f:
+        db = connect(f"sqlite:///{f.name}")
+        mode = list(db.query("PRAGMA journal_mode").next().values())[0]
+        assert mode.lower() == "wal"
+        db.close()
+
+    with tempfile.NamedTemporaryFile(suffix=".db") as f:
+        db = connect(f"sqlite:///{f.name}", sqlite_wal_mode=False)
+        mode = list(db.query("PRAGMA journal_mode").next().values())[0]
+        assert mode.lower() != "wal"
+        db.close()
+
+
+def test_constructor_defaults_direct():
+    # Bypass connect()'s explicit kwargs to exercise Database.__init__'s
+    # own defaults directly.
+    with tempfile.NamedTemporaryFile(suffix=".db") as f:
+        db = Database(f"sqlite:///{f.name}")
+        assert db.ensure_schema is True
+        mode = list(db.query("PRAGMA journal_mode").next().values())[0]
+        assert mode.lower() == "wal"
+        db.close()
+
+
+def test_constructor_kwargs_forwarded(db):
+    d = Database("sqlite://", engine_kwargs={"echo": True})
+    assert d.engine.echo is True
+    d.close()
+
+    tbl = db.get_table("no_increment", primary_increment=False)
+    assert tbl.table.c["id"].autoincrement is False
+
+
+def test_text_primary_type_rejected(db):
+    with pytest.raises(
+        AssertionError,
+        match=r"^Text-based primary_type support is dropped, use db\.types\.$",
+    ):
+        db.create_table("bad_primary_type", primary_type="str")
+
+
+def test_connect_forwards_kwargs():
+    db = connect("sqlite:///:memory:", schema="myschema", ensure_schema=False)
+    assert db.schema == "myschema"
+    assert db.ensure_schema is False
+    db.close()
+
+    db = connect(engine_kwargs={"echo": True})
+    assert db.engine.echo is True
+    db.close()
+
+    db = connect(row_type=dict)
+    row = db.query("SELECT 1 AS a").next()
+    assert type(row) is dict
+    db.close()
+
+    with tempfile.NamedTemporaryFile(suffix=".db") as f:
+        db = connect(f"sqlite:///{f.name}")
+        mode = list(db.query("PRAGMA journal_mode").next().values())[0]
+        assert mode.lower() == "wal"
+        db.close()
+
+    with tempfile.NamedTemporaryFile(suffix=".db") as f:
+        # -2000 is SQLite's own default cache_size, so it wouldn't
+        # distinguish "the statement ran" from "it didn't"; pick a value
+        # that differs from the default.
+        db = connect(
+            f"sqlite:///{f.name}", on_connect_statements=["PRAGMA cache_size=-4000"]
+        )
+        cache_size = list(db.query("PRAGMA cache_size").next().values())[0]
+        assert cache_size == -4000
+        db.close()
+
+
+def test_connect_database_url_env_fallback(monkeypatch):
+    with tempfile.NamedTemporaryFile(suffix=".db") as f:
+        monkeypatch.setenv("DATABASE_URL", f"sqlite:///{f.name}")
+        db = connect()
+        assert db.url == f"sqlite:///{f.name}"
+        db.close()
+
+
+def test_nested_transaction_rollback(db):
+    tbl = db["nested_tx"]
+    db.begin()
+    db.begin()
+    tbl.insert({"a": 1})
+    db.commit()
+    db.rollback()
+    assert tbl.count() == 0
+
+
+def test_commit_rollback_without_transaction_noop(db):
+    # Neither call has ever begun a transaction; both must be no-ops.
+    db.commit()
+    db.rollback()
+
+
+def test_close_resets_tables_and_is_idempotent():
+    db = connect()
+    db["close_idempotent_test"].insert({"a": 1})
+    assert db._tables != {}
+    db.close()
+    assert db._tables == {}
+    db.close()  # closing twice must not raise
+
+
+def test_connection_closed_after_commit(db):
+    tbl = db["conn_closed_test"]
+    db.begin()
+    tbl.insert({"a": 1})
+    conn = db.executable
+    db.commit()
+    assert conn.closed

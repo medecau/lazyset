@@ -1,13 +1,24 @@
+import logging
+import os
+import threading
+import warnings
 from datetime import datetime
 
 import pytest
 from sqlalchemy import Float
 from sqlalchemy.exc import ArgumentError
-from sqlalchemy.types import BIGINT, TEXT
+from sqlalchemy.schema import Column
+from sqlalchemy.types import BIGINT, TEXT, Unicode
 
-from dataset import QueryError, chunked
+from dataset import DatasetError, QueryError, chunked, connect
+from dataset.util import index_name
 
 from .sample_data import TEST_CITY_1, TEST_CITY_2, TEST_DATA
+
+# Backend detected at collection time so it can gate skipif marks, which are
+# evaluated before the ``db`` fixture exists.
+DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite://")
+IS_SQLITE = DATABASE_URL.startswith("sqlite")
 
 
 def test_insert(table):
@@ -96,6 +107,47 @@ def test_upsert_id(db):
     assert len(table) == 1, len(table)
 
 
+def test_write_method_return_values(db, table):
+    pk = table.insert(
+        {"date": datetime(2011, 1, 2), "temperature": -10, "place": "Berlin"}
+    )
+    assert pk == len(TEST_DATA) + 1
+
+    # No primary key column: insert() returns True (empty-tuple branch).
+    no_pk_table = db.create_table("no_pk_writes", primary_id=False)
+    assert no_pk_table.insert({"a": 1}) is True
+
+    # insert_ignore() on a matching existing row returns False.
+    assert (
+        table.insert_ignore(
+            {"date": datetime(2011, 1, 1), "temperature": 6, "place": TEST_CITY_1},
+            ["place"],
+        )
+        is False
+    )
+
+    # upsert() that matches and updates existing row(s) returns True.
+    assert (
+        table.upsert(
+            {"date": datetime(2011, 1, 1), "temperature": 99, "place": TEST_CITY_1},
+            ["place"],
+        )
+        is True
+    )
+
+    # delete() on a table that was never created returns 0 without erroring.
+    missing = db.load_table("truly_missing_delete_target")
+    assert missing.delete() == 0
+
+
+def test_upsert_many_keys_targeting(db):
+    # An empty keys list would match *every* existing row instead of just
+    # the intended one, turning every upsert after the first into an update.
+    tbl = db["upsert_many_targeting"]
+    tbl.upsert_many([{"id": 1}, {"id": 2}], "id")
+    assert len(tbl) == 2
+
+
 def test_update_while_iter(table):
     for row in table:
         row["foo"] = "bar"
@@ -167,6 +219,11 @@ def test_find_one(table):
     assert d is None, d
 
 
+def test_find_one_positional_clause(table):
+    row = table.find_one(table.table.columns.temperature > 4)
+    assert row["temperature"] > 4
+
+
 def test_count(table):
     assert len(table) == len(TEST_DATA), len(table)
     length = table.count(place=TEST_CITY_1)
@@ -193,11 +250,54 @@ def test_find_pagination(table):
     assert len(ds) == 1, ds
 
 
+def test_find_step_zero(table):
+    # _step=0 disables chunked fetching (treated as None internally).
+    assert len(list(table.find(_step=0))) == len(TEST_DATA)
+
+
 def test_find_order_by(table):
     ds = list(table.find(order_by=["temperature"]))
     assert ds[0]["temperature"] == -1, ds
     ds = list(table.find(order_by=["-temperature"]))
     assert ds[0]["temperature"] == 8, ds
+
+
+def test_find_and_order_by_missing_or_none_column(db, table):
+    # Filtering/ordering on a column that doesn't exist is silently ignored.
+    assert list(table.find(nonexistent_col="x")) == []
+    assert [dict(r) for r in table.find(order_by="nonexistent_col")] == [
+        dict(r) for r in table.find()
+    ]
+
+    # A None entry in an order_by list is skipped, not an error.
+    assert [dict(r) for r in table.find(order_by=[None, "temperature"])] == [
+        dict(r) for r in table.find(order_by="temperature")
+    ]
+
+    # An invalid column *followed by* a valid one: the loop must "continue"
+    # past it, not "break" out and drop the remaining orderings.
+    assert [
+        dict(r) for r in table.find(order_by=["nonexistent_col", "temperature"])
+    ] == [dict(r) for r in table.find(order_by="temperature")]
+
+    # A column name starting with "X" exercises lstrip("-") specifically
+    # (stripping leading '-' characters), not a substring/set mutation.
+    tbl2 = db["xtag_order"]
+    tbl2.insert({"Xtag": 1})
+    tbl2.insert({"Xtag": 2})
+    ds = list(tbl2.find(order_by="-Xtag"))
+    assert [r["Xtag"] for r in ds] == [2, 1]
+
+
+def test_find_no_engine_raises():
+    db = connect()
+    tbl = db["find_no_engine"]
+    tbl.insert({"a": 1})
+    db.close()
+    with pytest.raises(
+        RuntimeError, match=r"^Cannot run queries when no engine is available\.$"
+    ):
+        list(tbl.find())
 
 
 def test_find_clause_expression(table):
@@ -229,18 +329,51 @@ def test_find_operator(table, filt, expected):
 
 
 @pytest.mark.parametrize(
-    "filt",
+    "filt,expected",
     [
-        {"temperature": {"in": 5}},  # 'in' requires a list
-        {"temperature": {"notin": 5}},  # 'notin' requires a list
-        {"temperature": {"between": [1]}},  # 'between' requires two values
-        {"temperature": {"between": 5}},  # 'between' requires a list
-        {"place": {"startswith": 5}},  # 'startswith' requires a string
-        {"place": {"endswith": 5}},  # 'endswith' requires a string
+        ({"temperature": {"gt": 5}}, 2),
+        ({"temperature": {"gte": 5}}, 3),
+        ({"temperature": {"lt": 0}}, 1),
+        ({"temperature": {"lte": 0}}, 2),
+        ({"place": {"is": TEST_CITY_2}}, 3),
+        ({"place": {"==": TEST_CITY_2}}, 3),
+        ({"temperature": {"not": -1}}, 5),
+        ({"temperature": {"<>": -1}}, 5),
+        ({"temperature": {"..": [5, 8]}}, 3),
     ],
 )
-def test_find_operator_invalid_value(table, filt):
-    with pytest.raises(QueryError):
+def test_find_operator_aliases(table, filt, expected):
+    # Every operator has a word/symbol alias; each must behave identically
+    # to its canonical form from test_find_operator above.
+    ds = list(table.find(**filt))
+    assert len(ds) == expected, ds
+
+
+@pytest.mark.parametrize(
+    "filt,expected_message",
+    [
+        (
+            {"temperature": {"in": 5}},
+            r"^'in' filter requires a list, got <class 'int'>$",
+        ),
+        (
+            {"temperature": {"notin": 5}},
+            r"^'notin' filter requires a list, got <class 'int'>$",
+        ),
+        (
+            {"temperature": {"between": [1]}},
+            r"^'between' filter requires a list of two values$",
+        ),
+        (
+            {"temperature": {"between": 5}},
+            r"^'between' filter requires a list of two values$",
+        ),
+        ({"place": {"startswith": 5}}, r"^'startswith' filter requires a string$"),
+        ({"place": {"endswith": 5}}, r"^'endswith' filter requires a string$"),
+    ],
+)
+def test_find_operator_invalid_value(table, filt, expected_message):
+    with pytest.raises(QueryError, match=expected_message):
         list(table.find(**filt))
 
 
@@ -313,10 +446,46 @@ def test_distinct_with_filter(table):
     assert len(x) == 6, x
 
 
+def test_distinct_limit_offset_and_missing_column(table):
+    assert len(list(table.distinct("temperature", _limit=1))) == 1
+
+    all_rows = list(table.distinct("temperature"))
+    offset_rows = list(table.distinct("temperature", _offset=1))
+    assert len(offset_rows) == len(all_rows) - 1
+
+    with pytest.raises(DatasetError, match=r"^No such column: nonexistent_col$"):
+        list(table.distinct("nonexistent_col"))
+
+
 def test_insert_many(table):
     data = TEST_DATA * 100
     table.insert_many(data, chunk_size=13)
     assert len(table) == len(data) + len(TEST_DATA), (len(table), len(data))
+
+
+def test_insert_many_chunk_size_flush(db):
+    tbl = db["insert_many_chunk_flush"]
+    tbl.insert({"n": 0})  # pre-create the "n" column so the sync step is a no-op
+    tbl.delete()
+
+    conn = db.executable
+    original_execute = conn.execute
+    calls = []
+
+    def spy(*args, **kwargs):
+        calls.append(1)
+        return original_execute(*args, **kwargs)
+
+    conn.execute = spy
+    try:
+        tbl.insert_many([{"n": i} for i in range(4)], chunk_size=2)
+    finally:
+        del conn.execute
+
+    # 4 rows at chunk_size=2 must flush twice (2 execute calls), not once
+    # per row and not once for the whole batch.
+    assert len(calls) == 2, calls
+    assert len(tbl) == 4
 
 
 def test_chunked_insert(table):
@@ -348,6 +517,62 @@ def test_chunked_insert_invalid_callback(table):
         chunked.ChunkedInsert(table, callback="not callable")
 
 
+def test_chunked_flush_threshold_and_default(db):
+    assert chunked.ChunkedInsert(db["chunk_default"]).chunksize == 1000
+    assert chunked.ChunkedUpdate(db["chunk_default2"], ["id"]).chunksize == 1000
+
+    tbl = db["chunk_threshold"]
+    seen = []
+
+    def callback(queue):
+        seen.append(len(queue))
+
+    with chunked.ChunkedInsert(tbl, chunksize=2, callback=callback) as inserter:
+        inserter.insert({"a": 1})
+        inserter.insert({"a": 2})  # hits the chunksize=2 threshold, auto-flushes
+        inserter.insert({"a": 3})  # flushed on __exit__ instead
+    assert seen == [2, 1], seen
+
+
+def test_chunked_insert_preserves_values(db):
+    tbl = db["chunk_heterogeneous"]
+    with chunked.ChunkedInsert(tbl) as inserter:
+        inserter.insert({"a": 1, "b": "x"})
+        inserter.insert({"a": 2})  # missing "b", must be padded with NULL
+
+    rows = list(tbl.find(order_by="a"))
+    assert rows[0]["a"] == 1 and rows[0]["b"] == "x"
+    assert rows[1]["a"] == 2 and rows[1]["b"] is None
+
+
+def test_chunked_update_groups_by_field_set(db):
+    # Two queued rows sharing the same field set must be batched into a
+    # single table.update_many() call, not one call per row.
+    tbl = db["chunk_update_groups"]
+    tbl.insert_many([{"id": 1, "n": 1}, {"id": 2, "n": 2}])
+
+    calls = []
+    original_update_many = tbl.update_many
+
+    def spy(rows, keys, **kwargs):
+        rows = list(rows)
+        calls.append(len(rows))
+        return original_update_many(rows, keys, **kwargs)
+
+    tbl.update_many = spy
+    try:
+        updater = chunked.ChunkedUpdate(tbl, ["id"])
+        updater.update({"id": 1, "n": 10})
+        updater.update({"id": 2, "n": 20})
+        updater.flush()
+    finally:
+        del tbl.update_many
+
+    assert calls == [2], calls
+    assert tbl.find_one(id=1)["n"] == 10
+    assert tbl.find_one(id=2)["n"] == 20
+
+
 def test_chunked_update_callback(db):
     tbl = db["chunked_update_cb"]
     tbl.insert_many([{"id": 1, "n": 1}, {"id": 2, "n": 2}, {"id": 3, "n": 3}])
@@ -376,6 +601,100 @@ def test_update_many(db):
 
     # Ensure data has been updated.
     assert tbl.find_one(id=1)["temp"] == tbl.find_one(id=3)["temp"]
+
+
+def test_update_many_heterogeneous_columns(db):
+    tbl = db["update_many_hetero"]
+    tbl.insert_many([{"id": 1, "x": "x1", "y": "y1"}, {"id": 2, "x": "x2", "y": "y2"}])
+
+    # Both rows share one compiled UPDATE statement (SET x=.., y=..); a
+    # column missing from a given row's dict is bound as NULL for that row,
+    # not left untouched.
+    tbl.update_many([{"id": 1, "x": "x1-new"}, {"id": 2, "y": "y2-new"}], "id")
+
+    row1 = tbl.find_one(id=1)
+    row2 = tbl.find_one(id=2)
+    assert row1["x"] == "x1-new"
+    assert row1["y"] is None
+    assert row2["x"] is None
+    assert row2["y"] == "y2-new"
+
+
+def test_update_many_chunk_size_flush(db):
+    tbl = db["update_many_chunk_flush"]
+    tbl.insert_many([{"id": 1, "n": 1}, {"id": 2, "n": 2}])
+    # chunk_size=1 forces a flush after every row, not just at the end.
+    tbl.update_many([{"id": 1, "n": 10}, {"id": 2, "n": 20}], "id", chunk_size=1)
+    assert tbl.find_one(id=1)["n"] == 10
+    assert tbl.find_one(id=2)["n"] == 20
+
+
+def _write_row(tbl, method_name, row, keys, **kwargs):
+    if method_name == "insert":
+        tbl.insert(row, **kwargs)
+    elif method_name == "insert_ignore":
+        tbl.insert_ignore(row, keys, **kwargs)
+    elif method_name == "insert_many":
+        tbl.insert_many([row], **kwargs)
+    elif method_name == "update":
+        tbl.update(row, keys, **kwargs)
+    elif method_name == "upsert":
+        tbl.upsert(row, keys, **kwargs)
+    elif method_name == "upsert_many":
+        tbl.upsert_many([row], keys, **kwargs)
+    else:
+        raise ValueError(method_name)
+
+
+@pytest.mark.parametrize(
+    "method_name",
+    ["insert", "insert_ignore", "insert_many", "update", "upsert", "upsert_many"],
+)
+def test_ensure_false_and_types_forwarding(db, method_name):
+    tbl = db[f"ensure_types_{method_name}"]
+    tbl.insert({"id": 1, "place": "seed"})
+
+    # ensure=False: a column absent from the row's keys must not be created.
+    # id=2/3 are fresh rows so insert()/insert_many() (which always INSERT,
+    # unlike insert_ignore/update/upsert) don't collide with the id=1 seed.
+    _write_row(
+        tbl,
+        method_name,
+        {"id": 2, "place": "seed2", "newcol": 123},
+        ["id"],
+        ensure=False,
+    )
+    assert "newcol" not in tbl.columns
+
+    # types=: an explicit type overrides the guessed one for a new column.
+    _write_row(
+        tbl,
+        method_name,
+        {"id": 3, "place": "seed3", "typedcol": 123},
+        ["id"],
+        types={"typedcol": db.types.text},
+    )
+    assert isinstance(tbl.table.c["typedcol"].type, TEXT)
+
+
+def test_ensure_creates_index(db):
+    tbl = db["ensure_index_insert_ignore"]
+    tbl.insert_ignore({"a": 1}, ["a"])
+    assert tbl.has_index(["a"]) is True
+
+    tbl_no_ensure = db["ensure_index_insert_ignore_off"]
+    tbl_no_ensure.insert({"a": 1})
+    tbl_no_ensure.insert_ignore({"a": 2}, ["a"], ensure=False)
+    assert tbl_no_ensure.has_index(["a"]) is False
+
+    tbl2 = db["ensure_index_upsert"]
+    tbl2.upsert({"a": 1}, ["a"])
+    assert tbl2.has_index(["a"]) is True
+
+    tbl2_no_ensure = db["ensure_index_upsert_off"]
+    tbl2_no_ensure.insert({"a": 1})
+    tbl2_no_ensure.upsert({"a": 2}, ["a"], ensure=False)
+    assert tbl2_no_ensure.has_index(["a"]) is False
 
 
 def test_chunked_update(db):
@@ -425,6 +744,13 @@ def test_table_drop(db, table):
     assert "weather" not in db
 
 
+def test_drop_evicts_table_cache(db, table):
+    t1 = db["weather"]
+    assert t1 is table
+    t1.drop()
+    assert db["weather"] is not t1
+
+
 def test_table_drop_then_create(db, table):
     assert "weather" in db
     db["weather"].drop()
@@ -438,12 +764,83 @@ def test_columns(table):
     assert "date" in cols and "temperature" in cols and "place" in cols
 
 
-def test_drop_column(table):
+def test_has_column_none_and_columns_before_sync(db, table):
+    assert table.has_column(None) is False
+
+    # Evict from the wrapper cache to force a fresh reflection of _columns
+    # (starts at the None sentinel, not an empty dict).
+    db._tables.pop("weather", None)
+    fresh = db.load_table("weather")
+    assert "place" in fresh.columns
+
+
+def test_sync_table_add_existing_column_is_idempotent(table):
+    before = set(table.columns)
+    table._sync_table((Column("place", Unicode),))
+    assert set(table.columns) == before
+
+
+def test_load_missing_table_raises(db):
+    tbl = db.load_table("truly_missing_load_table_xyz")
+    with pytest.raises(
+        DatasetError, match=r"^Table does not exist: truly_missing_load_table_xyz$"
+    ):
+        tbl.insert({"a": 1})
+
+
+@pytest.mark.skipif(not IS_SQLITE, reason="drop_column succeeds on non-SQLite backends")
+def test_drop_column_guards():
+    # A standalone connection, not the shared `db` fixture: we close it
+    # mid-test, which would break the fixture's own teardown.
+    db = connect()
+    tbl = db["drop_column_guard"]
+    tbl.insert({"a": 1})
+
+    with pytest.raises(
+        RuntimeError, match=r"^SQLite does not support dropping columns\.$"
+    ):
+        tbl.drop_column("a")
+
+    db.close()
+    with pytest.raises(
+        RuntimeError, match=r"^Cannot drop columns when no engine is available\.$"
+    ):
+        tbl.drop_column("a")
+
+
+def test_threading_warn_fires_message_and_category(db):
+    stop = threading.Event()
+    helper = threading.Thread(target=stop.wait)
+    helper.start()
     try:
-        table.drop_column("date")
-        assert "date" not in table.columns
-    except RuntimeError:
-        pass
+        assert threading.active_count() > 1
+        db.begin()
+        try:
+            with pytest.warns(RuntimeWarning) as record:
+                db["threading_warn_test"].insert({"a": 1})
+        finally:
+            db.rollback()
+    finally:
+        stop.set()
+        helper.join()
+
+    assert len(record) == 1
+    assert record[0].category is RuntimeWarning
+    assert str(record[0].message) == (
+        "Changing the database schema inside a transaction "
+        "in a multi-threaded environment is likely to lead "
+        "to race conditions and synchronization issues."
+    )
+
+
+def test_threading_warn_silent_single_thread(db):
+    db.begin()
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # any warning becomes a failure here
+            db["threading_warn_silent_test"].insert({"a": 1})
+    finally:
+        db.rollback()
 
 
 def test_iter(table):
@@ -469,6 +866,37 @@ def test_create_column(db, table):
     assert "foo" in table.table.c, table.table.c
     assert isinstance(table.table.c["foo"].type, flt), table.table.c["foo"].type
     assert "foo" in table.columns, table.columns
+
+
+def test_create_column_forwards_kwargs(db, table):
+    # SQLite's ALTER TABLE requires a default when adding a NOT NULL column.
+    table.create_column(
+        "nullable_test", db.types.text, nullable=False, server_default="x"
+    )
+    assert table.table.c["nullable_test"].nullable is False
+
+
+def test_create_column_existing_logs_debug(table, caplog):
+    with caplog.at_level(logging.DEBUG):
+        table.create_column("place", table.db.types.text)
+    assert "Column exists" in caplog.text
+
+
+def test_sync_columns_ensure_false_and_explicit_types(db):
+    tbl = db["sync_columns_test"]
+    tbl.insert({"id": 1})
+
+    tbl.insert({"id": 2, "unknown": "x"}, ensure=False)
+    assert "unknown" not in tbl.columns
+
+    # For a brand-new column there's no established canonical casing yet,
+    # so types= must match the row's own key exactly; a mismatched-case key
+    # is silently ignored and the type falls back to guessing from the value.
+    tbl.insert({"id": 3, "MyCol": 123}, types={"mycol": db.types.text})
+    assert isinstance(tbl.table.c["MyCol"].type, BIGINT)
+
+    tbl.insert({"id": 4, "OtherCol": 123}, types={"OtherCol": db.types.text})
+    assert isinstance(tbl.table.c["OtherCol"].type, TEXT)
 
 
 @pytest.mark.parametrize(
@@ -497,3 +925,28 @@ def test_key_order(db, table):
 def test_empty_query(table):
     empty = list(table.find(place="not in data"))
     assert len(empty) == 0, empty
+
+
+def test_create_index(table):
+    table.create_index(["place"])
+    expected_name = index_name("weather", ["place"])
+    indexes = table.db.inspect.get_indexes("weather")
+    matched = [i for i in indexes if i["name"] == expected_name]
+    assert len(matched) == 1, indexes
+    assert matched[0]["column_names"] == ["place"]
+    assert table.has_index(["place"]) is True
+
+
+def test_create_index_requires_existing_table(db):
+    tbl = db.load_table("truly_missing_index_table_xyz")
+    with pytest.raises(DatasetError, match=r"^Table has not been created yet\.$"):
+        tbl.create_index(["a"])
+
+
+def test_has_index(db, table):
+    assert table.has_index(["id"]) is True  # primary key
+    assert table.has_index(["temperature"]) is False  # not indexed
+    assert table.has_index(["nonexistent_col"]) is False
+
+    missing = db.load_table("truly_missing_has_index_table_xyz")
+    assert missing.has_index(["a"]) is False

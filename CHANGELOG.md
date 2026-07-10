@@ -20,6 +20,18 @@ changes must be reconstructed from revision history.*
   - **`index_name`**: Auto-generated index names now use an injective column join, so distinct column sets no longer collide; generated names for auto-indexes change (cosmetic — names are never used for lookup)
   - **`create_table(primary_id=False)`**: A columnless table now defers creation until the first column is added, instead of eagerly emitting `CREATE TABLE t ()` — this previously failed on SQLite and MySQL; PostgreSQL now behaves the same way for consistency *(minor behavior change)*
   - **Dev tooling**: Added `mypy` to dev dependencies, `make lint` now runs both ruff and mypy
+  - **Mutation testing**: Added `mutmut` (dev-only dependency) and ~50 targeted tests, closing
+    SQLite-killable mutation survivors from 333 to 115. The remaining survivors fall into two
+    accepted, out-of-scope buckets — not gaps:
+    - *Dialect-guarded* (~20): code paths that never execute on SQLite, e.g. `drop_column`'s body,
+      `create_index`'s MySQL text-length prefix, `has_index`'s `schema=` forward, and
+      `Database.__init__`'s postgres/mysql dialect-name literals. Killable only under
+      `DATABASE_URL=postgresql://… uv run mutmut run` (or MySQL).
+    - *Behaviorally equivalent* (~95): no correct assertion can distinguish the mutant from the
+      original, e.g. `and_(True, *clauses)` (no-op identity), `_step`/`chunk_size` boundary swaps,
+      `WHERE NULL` vs `WHERE false()` (both exclude all rows), `fetchall` vs `fetchmany` batching,
+      `checkfirst`/`autoincrement` defaults, WAL PRAGMA case-folding, `_indexes` cache poisoning.
+    Re-triaging from scratch isn't needed for a future `mutmut run`; diff against this baseline.
   - **Build system**: Migrated from setuptools to modern pyproject.toml with Hatchling (PEP 621)
   - **Linting**: Replaced flake8 with ruff for faster, more comprehensive linting
   - **CI/CD**: Updated GitHub Actions to use modern action versions (checkout@v4, setup-python@v5)
