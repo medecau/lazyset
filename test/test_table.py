@@ -379,6 +379,12 @@ def test_find_operator_invalid_value(table, filt, expected_message):
         list(table.find(**filt))
 
 
+def test_find_unknown_operator_raises(table):
+    # A typo'd/unrecognized operator must raise, not silently match zero rows.
+    with pytest.raises(QueryError, match=r"^Unrecognized operator: contains$"):
+        list(table.find(place={"contains": "x"}))
+
+
 def _prefix_table(db):
     t = db["prefix_test"]
     t.insert({"org": "acme"})

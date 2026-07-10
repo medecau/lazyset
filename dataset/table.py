@@ -547,7 +547,7 @@ class Table:
             if not isinstance(value, str):
                 raise QueryError("'endswith' filter requires a string")
             return self.table.c[column].endswith(value, autoescape=True)
-        return false()
+        raise QueryError(f"Unrecognized operator: {op}")
 
     def _args_to_clause(
         self,
