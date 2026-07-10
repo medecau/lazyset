@@ -277,6 +277,10 @@ class Table:
         be created based on the settings of ``ensure`` and ``types``, matching
         the behavior of :py:meth:`insert() <dataset.Table.insert>`.
 
+        Since the same ``row`` dict supplies both the filter (``keys``) and
+        the new values, a key column's own value can never be changed via
+        ``update()`` — it is only ever used to find the row, not to set it.
+
         Returns the number of rows matched by ``keys``.
         """
         row = self._sync_columns(row, ensure, types=types)

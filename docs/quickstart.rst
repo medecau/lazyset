@@ -64,6 +64,10 @@ The list of filter columns given as the second argument filter using the
 values in the first column. If you don't want to update over a
 particular value, just use the auto-generated ``id`` column.
 
+Since the same `dict` supplies both the filter columns and the new
+values, a filter column's own value can never be changed by ``update()``
+— it is only ever used to find the row, not to set it.
+
 Using Transactions
 ------------------
 
