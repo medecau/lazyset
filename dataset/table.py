@@ -397,6 +397,7 @@ class Table:
         """Load the tables definition from the database."""
         with self.db.lock:
             self._columns = None
+            self._indexes = []
             try:
                 self._table = SQLATable(
                     self.name,

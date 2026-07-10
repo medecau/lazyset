@@ -968,3 +968,17 @@ def test_has_index(db, table):
 
     missing = db.load_table("truly_missing_has_index_table_xyz")
     assert missing.has_index(["a"]) is False
+
+
+def test_indexes_cache_invalidated_on_drop(table):
+    table.create_index(["place"])
+    assert table.has_index(["place"]) is True
+
+    table.drop()
+    table.insert({"place": "Berlin"})
+
+    # The dropped table's index is gone; the cached "has an index" answer
+    # from before the drop must not leak into the recreated table.
+    assert table.has_index(["place"]) is False
+    indexes = table.db.inspect.get_indexes(table.name)
+    assert indexes == []
