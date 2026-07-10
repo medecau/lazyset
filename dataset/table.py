@@ -296,29 +296,35 @@ class Table:
         """
         keys = ensure_strings(keys)
 
-        chunk: list[MutableRow] = []
-        columns: list[str] = []
+        chunk: list[WriteRow] = []
         for index, row in enumerate(rows):
-            columns.extend(
-                col for col in row if (col not in columns) and (col not in keys)
-            )
-
-            # bindparam requires names to not conflict (cannot be "id" for id)
-            row_ = dict(row)
-            for key in keys:
-                row_[f"_{key}"] = row_[key]
-                row_.pop(key)
-            chunk.append(row_)
+            chunk.append(row)
 
             # Update when chunk_size is fulfilled or this is the last row
             if len(chunk) == chunk_size or index == len(rows) - 1:
+                # Rows in a chunk may carry different sets of value columns;
+                # group by the exact column set (computed before the rename
+                # below) so a row missing a column leaves it untouched
+                # instead of overwriting it with NULL.
+                groups: dict[frozenset[str], list[MutableRow]] = {}
+                for row_ in chunk:
+                    columns = frozenset(col for col in row_ if col not in keys)
+                    renamed = dict(row_)
+                    for key in keys:
+                        renamed[f"_{key}"] = renamed[key]
+                        renamed.pop(key)
+                    groups.setdefault(columns, []).append(renamed)
+
                 cl = [self.table.c[k] == bindparam(f"_{k}") for k in keys]
-                stmt = (
-                    self.table.update()
-                    .where(and_(True, *cl))
-                    .values({col: bindparam(col, required=False) for col in columns})
-                )
-                self.db.executable.execute(stmt, chunk)
+                for columns, group_rows in groups.items():
+                    stmt = (
+                        self.table.update()
+                        .where(and_(True, *cl))
+                        .values(
+                            {col: bindparam(col, required=False) for col in columns}
+                        )
+                    )
+                    self.db.executable.execute(stmt, group_rows)
                 self.db._auto_commit()
                 chunk = []
 

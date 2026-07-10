@@ -607,16 +607,34 @@ def test_update_many_heterogeneous_columns(db):
     tbl = db["update_many_hetero"]
     tbl.insert_many([{"id": 1, "x": "x1", "y": "y1"}, {"id": 2, "x": "x2", "y": "y2"}])
 
-    # Both rows share one compiled UPDATE statement (SET x=.., y=..); a
-    # column missing from a given row's dict is bound as NULL for that row,
-    # not left untouched.
+    # Rows with different value-column sets must be grouped and updated with
+    # separate statements: a column missing from a given row's dict must be
+    # left untouched, not bound as NULL.
     tbl.update_many([{"id": 1, "x": "x1-new"}, {"id": 2, "y": "y2-new"}], "id")
 
     row1 = tbl.find_one(id=1)
     row2 = tbl.find_one(id=2)
     assert row1["x"] == "x1-new"
-    assert row1["y"] is None
-    assert row2["x"] is None
+    assert row1["y"] == "y1"
+    assert row2["x"] == "x2"
+    assert row2["y"] == "y2-new"
+
+
+def test_update_many_heterogeneous_columns_across_chunks(db):
+    tbl = db["update_many_hetero_chunks"]
+    tbl.insert_many([{"id": 1, "x": "x1", "y": "y1"}, {"id": 2, "x": "x2", "y": "y2"}])
+
+    # chunk_size=1 forces each row into its own flushed chunk; the column
+    # grouping must not leak across chunks either.
+    tbl.update_many(
+        [{"id": 1, "x": "x1-new"}, {"id": 2, "y": "y2-new"}], "id", chunk_size=1
+    )
+
+    row1 = tbl.find_one(id=1)
+    row2 = tbl.find_one(id=2)
+    assert row1["x"] == "x1-new"
+    assert row1["y"] == "y1"
+    assert row2["x"] == "x2"
     assert row2["y"] == "y2-new"
 
 
