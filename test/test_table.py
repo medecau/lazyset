@@ -5,7 +5,7 @@ from sqlalchemy import Float
 from sqlalchemy.exc import ArgumentError
 from sqlalchemy.types import BIGINT, TEXT
 
-from dataset import chunked
+from dataset import QueryError, chunked
 
 from .sample_data import TEST_CITY_1, TEST_CITY_2, TEST_DATA
 
@@ -230,6 +230,22 @@ def test_find_operator(table, filt, expected):
     assert len(ds) == expected, ds
 
 
+@pytest.mark.parametrize(
+    "filt",
+    [
+        {"temperature": {"in": 5}},  # 'in' requires a list
+        {"temperature": {"notin": 5}},  # 'notin' requires a list
+        {"temperature": {"between": [1]}},  # 'between' requires two values
+        {"temperature": {"between": 5}},  # 'between' requires a list
+        {"place": {"startswith": 5}},  # 'startswith' requires a string
+        {"place": {"endswith": 5}},  # 'endswith' requires a string
+    ],
+)
+def test_find_operator_invalid_value(table, filt):
+    with pytest.raises(QueryError):
+        list(table.find(**filt))
+
+
 def _prefix_table(db):
     t = db["prefix_test"]
     t.insert({"org": "acme"})
@@ -326,6 +342,33 @@ def test_chunked_insert_callback(table):
             chunk_tbl.insert(item)
     assert len(data) == n_items
     assert len(table) == len(data) + len(TEST_DATA)
+
+
+def test_chunked_insert_invalid_callback(table):
+    # A non-callable callback is rejected at construction time.
+    with pytest.raises(chunked.InvalidCallbackError):
+        chunked.ChunkedInsert(table, callback="not callable")
+
+
+def test_chunked_update_callback(db):
+    tbl = db["chunked_update_cb"]
+    tbl.insert_many([{"id": 1, "n": 1}, {"id": 2, "n": 2}, {"id": 3, "n": 3}])
+    seen = []
+
+    def callback(queue):
+        seen.append(len(queue))
+
+    # chunksize=2 forces an auto-flush mid-stream, exercising both the queue
+    # threshold path and the ChunkedUpdate callback.
+    updater = chunked.ChunkedUpdate(tbl, ["id"], chunksize=2, callback=callback)
+    updater.update({"id": 1, "n": 10})
+    updater.update({"id": 2, "n": 20})
+    updater.update({"id": 3, "n": 30})
+    updater.flush()
+
+    assert sum(seen) == 3, seen
+    assert tbl.find_one(id=1)["n"] == 10
+    assert tbl.find_one(id=3)["n"] == 30
 
 
 def test_update_many(db):

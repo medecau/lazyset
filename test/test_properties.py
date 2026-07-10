@@ -228,6 +228,14 @@ def test_guess_ordering():
     assert TYPES.guess(date(2020, 1, 1)) is Date
 
 
+def test_guess_passthrough():
+    # An explicit SQLAlchemy type instance is returned as-is, and a type
+    # object is instantiated (documented behaviour of guess).
+    instance = BigInteger()
+    assert TYPES.guess(instance) is instance
+    assert isinstance(TYPES.guess(BigInteger), BigInteger)
+
+
 # ---------------------------------------------------------------------------
 # safe_url
 # ---------------------------------------------------------------------------

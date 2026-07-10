@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from dataset import connect
 
-from .sample_data import TEST_DATA
+from .sample_data import TEST_CITY_1, TEST_DATA
 
 # Backend detected at collection time so it can gate skipif marks, which are
 # evaluated before the ``db`` fixture exists.
@@ -188,3 +188,65 @@ def test_thread_connections_released():
             f"Expected at most 1 connection, got {len(db.connections)}"
         )
         db.close()
+
+
+def test_query_with_params(db, table):
+    rows = list(db.query("SELECT * FROM weather WHERE place = :p", p=TEST_CITY_1))
+    assert len(rows) == 3, rows
+
+
+def test_query_step(db, table):
+    # _step of 0 disables chunked fetching (treated as None internally).
+    rows = list(db.query("SELECT * FROM weather", _step=0))
+    assert len(rows) == len(TEST_DATA), rows
+
+
+def test_explicit_rollback(db):
+    tbl = db["explicit_rollback"]
+    tbl.insert({"a": 1})
+    db.begin()
+    tbl.insert({"a": 2})
+    db.rollback()
+    assert tbl.count() == 1, tbl.count()
+
+
+def test_autobegin_commit(db):
+    tbl = db["autobegin_commit"]
+    tbl.insert({"a": 1})
+    # A read autobegins a transaction on the shared connection; the following
+    # begin() then nests on top of it (tracked as True rather than a new tx).
+    list(tbl.find())
+    db.begin()
+    tbl.insert({"a": 2})
+    db.commit()
+    assert tbl.count() == 2, tbl.count()
+
+
+def test_closed_database_raises():
+    db = connect()
+    db["closed_test"].insert({"a": 1})
+    db.close()
+    with pytest.raises(RuntimeError):
+        _ = db.executable
+
+
+def test_contains_invalid_name(db):
+    # Names that fail normalization are simply "not contained", not errors.
+    assert "" not in db
+    assert "   " not in db
+
+
+def test_load_table_caches(db, table):
+    # Evict from the wrapper cache so load_table must reflect it afresh.
+    db._tables.pop("weather", None)
+    tbl = db.load_table("weather")
+    assert tbl.exists
+    assert "weather" in db._tables
+
+
+def test_connect_no_ensure_schema():
+    db = connect(ensure_schema=False)
+    # With schema generation off, get_table routes through load_table.
+    tbl = db.get_table("any_table")
+    assert tbl.name == "any_table"
+    db.close()
