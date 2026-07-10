@@ -404,7 +404,7 @@ class Table:
 
         Returns the number of rows updated plus the number of rows inserted.
         """
-        # 5e09aba401 replaced a bulk implementation with a one-by-one loop,
+        # 2b1947e replaced a bulk implementation with a one-by-one loop,
         # since doing it in bulk ran into column-creation issues. The batch
         # below resolves that by union-syncing columns once per batch before
         # classifying rows, mirroring insert_many's own pre-scan.
