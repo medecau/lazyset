@@ -457,6 +457,17 @@ def test_find_operator_invalid_value(table, filt, expected_message):
         list(table.find(**filt))
 
 
+def test_find_large_in_list(table):
+    # A large IN list emits one bind param per element, blowing SQLite's
+    # SQLITE_LIMIT_VARIABLE_NUMBER ("too many SQL variables"); the values
+    # must be rendered inline instead.
+    ids = list(range(40000))
+    rows = list(table.find(id=ids))
+    assert len(rows) == len(TEST_DATA), len(rows)
+    # notin over a large list must inline too.
+    assert list(table.find(id={"notin": ids})) == []
+
+
 def test_find_unknown_operator_raises(table):
     # A typo'd/unrecognized operator must raise, not silently match zero rows.
     with pytest.raises(QueryError, match=r"^Unrecognized operator: contains$"):
