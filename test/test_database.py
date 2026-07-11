@@ -1,4 +1,5 @@
 import os
+import sys
 import tempfile
 import threading
 from collections import OrderedDict
@@ -211,6 +212,70 @@ def test_explicit_rollback(db):
     tbl.insert({"a": 2})
     db.rollback()
     assert tbl.count() == 1, tbl.count()
+
+
+def test_flush_tables_concurrent_with_get_table(tmp_path):
+    # _flush_tables iterated the shared self._tables without the lock; a
+    # concurrent get_table inserting a new wrapper (under the lock) resized
+    # the dict mid-iteration, raising "dictionary changed size during
+    # iteration" on the rolling-back thread. A tiny thread-switch interval
+    # makes the overlap land reliably. A file-backed DB (not :memory:) keeps
+    # the flusher thread's connections usable at close() teardown.
+    db = connect(f"sqlite:///{tmp_path / 'flush.db'}")
+    old_interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-5)
+    try:
+        for i in range(300):
+            db[f"seed_{i}"]  # populate _tables so each flush iterates real work
+
+        errors: list[Exception] = []
+        stop = threading.Event()
+
+        def flusher():
+            try:
+                while not stop.is_set():
+                    db.begin()
+                    db.rollback()  # calls _flush_tables, iterating _tables
+            except Exception as e:  # noqa: BLE001
+                errors.append(e)
+
+        def adder():
+            try:
+                for i in range(4000):
+                    db[f"new_name_{i}"]
+            finally:
+                stop.set()
+
+        t1 = threading.Thread(target=flusher)
+        t2 = threading.Thread(target=adder)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+        assert not errors, errors
+    finally:
+        sys.setswitchinterval(old_interval)
+        db.close()
+
+
+def test_rollback_invalidates_column_cache(db):
+    tbl = db["rollback_cache"]
+    tbl.insert({"a": 1})
+    assert tbl.has_column("a")  # populates the _columns cache
+
+    # Simulate the state after a rolled-back in-transaction ADD COLUMN: the
+    # real schema no longer has "a", but the wrapper still has it cached. On
+    # PostgreSQL rollback() would undo the ADD COLUMN; here we drop it
+    # out-of-band and commit so the DB genuinely lacks the column.
+    db.query("ALTER TABLE rollback_cache DROP COLUMN a")
+    db.executable.commit()
+
+    # _flush_tables (via rollback) nulled only _table, leaving _columns
+    # populated; _column_keys short-circuits on a non-None cache, so
+    # has_column kept returning the stale True. It must re-reflect now.
+    db.begin()
+    db.rollback()
+    assert tbl.has_column("a") is False
 
 
 def test_autobegin_commit(db):

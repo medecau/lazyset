@@ -134,9 +134,20 @@ class Database:
                 conn.close()
 
     def _flush_tables(self) -> None:
-        """Clear the table metadata after transaction rollbacks."""
-        for table in self._tables.values():
-            table._table = None
+        """Clear the table metadata after transaction rollbacks.
+
+        Holds the lock and snapshots the shared table registry before
+        iterating: a concurrent get_table() mutates self._tables under the
+        same lock, which would otherwise resize the dict mid-iteration. All
+        three caches are reset — nulling only _table leaves _column_keys
+        short-circuiting on a stale _columns dict, so a rolled-back
+        in-transaction ADD COLUMN would keep reading True.
+        """
+        with self.lock:
+            for table in list(self._tables.values()):
+                table._table = None
+                table._columns = None
+                table._indexes = []
 
     def _auto_commit(self) -> None:
         """Commit pending changes when not in an explicit transaction.
