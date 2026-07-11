@@ -4,7 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from hashlib import sha1
 from typing import Any
-from urllib.parse import urlencode, urlparse, urlunparse
+from urllib.parse import quote, urlencode, urlparse, urlunparse
 
 from sqlalchemy import Connection, ResultProxy
 from sqlalchemy.engine import Row
@@ -96,9 +96,14 @@ def make_sqlite_url(
     if not check_same_thread:
         params["check_same_thread"] = "false"
     if not params:
+        # Non-URI form: SQLite reads the raw path, so leave it unencoded
+        # (it would treat %20 literally).
         return "sqlite:///" + path
     params["uri"] = "true"
-    return "sqlite:///file:" + path + "?" + urlencode(params)
+    # URI form: percent-encode the path so ? / # / % in a filename can't
+    # mangle the query or look like an existing escape (keep "/" as the
+    # path separator).
+    return "sqlite:///file:" + quote(path, safe="/") + "?" + urlencode(params)
 
 
 class ResultIter(Iterator[OutRow]):

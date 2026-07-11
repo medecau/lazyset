@@ -13,7 +13,7 @@ DB-backed tests.
 import re
 import string
 from datetime import date, datetime
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import pytest
 from hypothesis import assume, example, given
@@ -379,9 +379,7 @@ def test_make_sqlite_url_no_params(path):
 
 @given(
     path=st.text(
-        alphabet=st.characters(
-            exclude_characters="?#", exclude_categories=("Cs", "Cc")
-        ),
+        alphabet=st.characters(exclude_categories=("Cs", "Cc")),
         min_size=1,
     ),
     timeout=st.integers(min_value=1, max_value=10_000),
@@ -398,7 +396,9 @@ def test_make_sqlite_url_params_roundtrip(path, timeout, mode, cache):
         nolock=True,
         check_same_thread=False,
     )
-    assert url.startswith("sqlite:///file:" + path + "?")
+    # The path is percent-encoded so ? / # / % in a filename can't mangle the
+    # query; the params still round-trip cleanly.
+    assert url.startswith("sqlite:///file:" + quote(path, safe="/") + "?")
     q = parse_qs(urlparse(url).query)
     assert q["uri"] == ["true"]
     assert q["cache"] == [cache]
@@ -407,3 +407,16 @@ def test_make_sqlite_url_params_roundtrip(path, timeout, mode, cache):
     assert q["immutable"] == ["1"]
     assert q["nolock"] == ["1"]
     assert q["check_same_thread"] == ["false"]
+
+
+def test_make_sqlite_url_encodes_path_metachars():
+    # ? # % in a filename must be percent-encoded so they don't truncate the
+    # URL into a bogus query/fragment.
+    url = make_sqlite_url("weird?name#x.db", timeout=5)
+    parsed = urlparse(url)
+    assert parsed.fragment == ""
+    q = parse_qs(parsed.query)
+    assert q["timeout"] == ["5"]
+    assert q["uri"] == ["true"]
+    assert "%3F" in url  # ?
+    assert "%23" in url  # #
