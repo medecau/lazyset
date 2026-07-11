@@ -332,6 +332,18 @@ class Table:
         """
         keys = ensure_strings(keys)
 
+        # Sync columns up front, mirroring insert_many's pre-scan (key
+        # columns included): a new value column is created honouring the
+        # previously-dead ensure/types params, and an empty write to a
+        # deferred table raises the same clear DatasetError as insert()/
+        # update() instead of a raw CompileError or a bare KeyError.
+        sample: MutableRow = {}
+        for row in rows:
+            for col in row:
+                if col not in sample:
+                    sample[col] = row[col]
+        self._sync_columns(sample, ensure, types=types)
+
         updated = 0
         chunk: list[WriteRow] = []
         for index, row in enumerate(rows):
@@ -342,10 +354,16 @@ class Table:
                 # Rows in a chunk may carry different sets of value columns;
                 # group by the exact column set (computed before the rename
                 # below) so a row missing a column leaves it untouched
-                # instead of overwriting it with NULL.
+                # instead of overwriting it with NULL. With ensure=False an
+                # unknown value column was never created, so drop it (like
+                # update()) rather than emit an UPDATE for it (CompileError).
                 groups: dict[frozenset[str], list[MutableRow]] = {}
                 for row_ in chunk:
-                    columns = frozenset(col for col in row_ if col not in keys)
+                    columns = frozenset(
+                        col
+                        for col in row_
+                        if col not in keys and self.has_column(col)
+                    )
                     renamed = dict(row_)
                     for key in keys:
                         if key not in renamed:

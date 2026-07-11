@@ -749,6 +749,32 @@ def test_update_many_heterogeneous_columns_across_chunks(db):
     assert row2["y"] == "y2-new"
 
 
+def test_update_many_auto_creates_columns(db):
+    # update_many never called _sync_columns, so its ensure/types params were
+    # dead and a new value column raised a raw CompileError. With ensure
+    # defaulting on, the column must be created before the UPDATE.
+    tbl = db["update_many_autocreate"]
+    tbl.insert_many([{"id": 1}, {"id": 2}])
+    tbl.update_many([{"id": 1, "note": "hello"}], "id")
+    assert "note" in tbl.columns
+    assert tbl.find_one(id=1)["note"] == "hello"
+
+
+def test_update_many_on_deferred_table_raises(db):
+    # primary_id=False with no columns defers creation; an empty update row
+    # gives it no column to create it with. update_many now routes through the
+    # same _sync_columns choke point as insert()/update(), so this raises a
+    # clear DatasetError instead of the old bare KeyError (key-bearing row) or
+    # incidental "missing key column" message.
+    tbl = db.create_table("deferred_update_many", primary_id=False)
+    with pytest.raises(
+        DatasetError,
+        match=r"^Cannot write to 'deferred_update_many': "
+        r"no columns to create it with\.$",
+    ):
+        tbl.update_many([{}], ["id"])
+
+
 def test_update_many_missing_key_column_raises(db):
     tbl = db["update_many_missing_key"]
     tbl.insert_many([{"id": 1, "n": 1}])
