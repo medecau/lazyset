@@ -1013,6 +1013,10 @@ class Table:
             if isinstance(column, ClauseElement):
                 clauses.append(column)
             else:
+                # Mirror _args_to_clause/_keys_to_args: normalize before both
+                # the has_column check and the exact-match column lookup, or a
+                # case/space-mismatched name passes has_column then KeyErrors.
+                column = self._get_column_name(column)
                 if not self.has_column(column):
                     raise DatasetError(f"No such column: {column}")
                 columns.append(self.table.c[column])

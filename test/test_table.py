@@ -526,6 +526,18 @@ def test_distinct_on_nonexistent_table(db):
     assert list(missing.distinct("col")) == []
 
 
+def test_distinct_case_insensitive(db):
+    # has_column() folds case, but distinct() indexed self.table.c with the
+    # raw caller string, so a case-mismatched column passed the has_column
+    # check and then KeyError'd on the exact-match column collection.
+    tbl = db["distinct_case_insensitive"]
+    tbl.insert({"Year": 2000})
+    tbl.insert({"Year": 2000})
+    tbl.insert({"Year": 2001})
+    rows = list(tbl.distinct("year"))
+    assert len(rows) == 2, rows
+
+
 def test_insert_many(table):
     data = TEST_DATA * 100
     table.insert_many(data, chunk_size=13)
