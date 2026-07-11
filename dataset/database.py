@@ -233,10 +233,13 @@ class Database:
             for conn in self.connections.values():
                 conn.close()
             self.connections.clear()
-        if self.engine is not None:
-            self.engine.dispose()
-        self._tables = {}
-        self.engine = None
+            # Dispose and null the engine under the same lock so a concurrent
+            # executable()/create_table() can't slip in and build a connection
+            # on a half-torn-down engine (orphaned connection).
+            if self.engine is not None:
+                self.engine.dispose()
+            self._tables = {}
+            self.engine = None
 
     @property
     def tables(self) -> list[str]:

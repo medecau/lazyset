@@ -2,6 +2,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 from collections import OrderedDict
 from datetime import datetime
 
@@ -463,6 +464,53 @@ def test_close_resets_tables_and_is_idempotent():
     db.close()
     assert db._tables == {}
     db.close()  # closing twice must not raise
+
+
+def test_close_atomic_with_concurrent_use(tmp_path):
+    # close() cleared connections under the lock but disposed the engine and
+    # nulled it OUTSIDE the lock. A concurrent executable() acquiring the lock
+    # in that gap saw engine != None and built a connection on a to-be-disposed
+    # engine (orphaned). Pausing inside dispose() forces the window.
+    db = connect(f"sqlite:///{tmp_path / 'close.db'}")
+    db["t"].insert({"a": 1})
+
+    original_dispose = db.engine.dispose
+    in_dispose = threading.Event()
+    resume = threading.Event()
+
+    def slow_dispose(*args, **kwargs):
+        in_dispose.set()
+        resume.wait(timeout=5)
+        return original_dispose(*args, **kwargs)
+
+    db.engine.dispose = slow_dispose
+
+    result = {}
+
+    def use():
+        try:
+            result["conn"] = db.executable
+        except RuntimeError as e:
+            result["error"] = str(e)
+
+    closer = threading.Thread(target=db.close)
+    closer.start()
+    in_dispose.wait(timeout=5)  # close() is now mid-teardown
+
+    user = threading.Thread(target=use)
+    user.start()
+    time.sleep(0.2)  # let use() acquire (buggy) or block on (fixed) the lock
+    resume.set()
+
+    closer.join()
+    user.join()
+
+    # With teardown atomic under the lock, executable() runs either fully
+    # before close (valid conn) or fully after (clean RuntimeError) — never on
+    # a half-torn-down engine.
+    assert "conn" not in result, "executable() got a connection from a closing DB"
+    assert "error" in result
+    assert db.connections == {}
 
 
 def test_connection_closed_after_commit(db):
