@@ -82,6 +82,24 @@ def test_insert_ignore_missing_key_column_raises(table):
     assert len(table) == before
 
 
+def test_insert_ignore_missing_key_column_raises_ensure_false(table):
+    # With ensure=False the create_index guard is skipped, so the absent key
+    # column previously slipped through: _keys_to_args defaulted it to None,
+    # _args_to_clause compiled it to false(), count was 0, and the row was
+    # inserted as a silent duplicate on every call. _keys_to_args must raise.
+    before = len(table)
+    with pytest.raises(DatasetError, match=r"^No such column: nonexistent_col$"):
+        table.insert_ignore({"place": "Berlin"}, ["nonexistent_col"], ensure=False)
+    assert len(table) == before
+
+
+def test_update_missing_table_column_raises(table):
+    # A key column absent from the table (not merely from the row) used to
+    # compile to false() and make update() silently return 0. It must raise.
+    with pytest.raises(DatasetError, match=r"^No such column: nonexistent_col$"):
+        table.update({"place": "Berlin"}, ["nonexistent_col"], ensure=False)
+
+
 def test_insert_ignore_all_key(table):
     for _i in range(0, 4):
         table.insert_ignore(

@@ -823,6 +823,14 @@ class Table:
         self, row: WriteRow, keys: Sequence[str]
     ) -> tuple[MutableRow, MutableRow]:
         keys = [self._get_column_name(k) for k in ensure_strings(keys)]
+        # A key column absent from the table (not merely from the row) would
+        # compile to false() downstream, silently making insert_ignore/upsert
+        # insert a duplicate every call and update() return 0. Raise instead.
+        # The lenient false() posture of find/count/delete is unaffected —
+        # only the write path routes through here.
+        for k in keys:
+            if not self.has_column(k):
+                raise DatasetError(f"No such column: {k}")
         row_ = dict(row)
         args = {k: row_.pop(k, None) for k in keys}
         return args, row_

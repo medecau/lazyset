@@ -48,6 +48,16 @@ changes must be reconstructed from revision history.*
     table that doesn't exist yet); the remaining 59 are dialect-guarded or behaviorally equivalent,
     matching the categories above. The other 67 survivors sit in code this pass didn't touch and were
     not individually re-reviewed — assumed to be the same pre-existing buckets, per the note above.
+  - **Second hardening pass (variant analysis)**: fixed a batch of validated sibling bugs of the
+    first hardening pass. Behavior changes worth noting:
+    - **`update`/`insert_ignore`/`upsert`**: now raise `DatasetError("No such column: …")` when a
+      key column is absent from the table, instead of silently inserting a duplicate row
+      (`insert_ignore`/`upsert` with `ensure=False`) or returning 0 (`update`). The lenient
+      `find`/`count`/`delete` read path is unchanged. *(behavior change)*
+    - **`update_many`**: now honours its previously-dead `ensure`/`types` params — a new value
+      column is created before the UPDATE, and an empty write to a deferred `primary_id=False`
+      table raises a clear `DatasetError` instead of a raw `CompileError`/`KeyError`. *(behavior
+      change)*
   - **Build system**: Migrated from setuptools to modern pyproject.toml with Hatchling (PEP 621)
   - **Linting**: Replaced flake8 with ruff for faster, more comprehensive linting
   - **CI/CD**: Updated GitHub Actions to use modern action versions (checkout@v4, setup-python@v5)
