@@ -998,6 +998,17 @@ def test_upsert_many_composite_key(db):
     assert tbl.find_one(a=2, b=1)["value"] == "z"
 
 
+def test_upsert_many_case_insensitive_key(db):
+    # A case-mismatched key (['ID'] against an 'id' column) must update the
+    # existing row, not KeyError on the exact-match column collection nor
+    # silently reroute the row to a duplicate INSERT.
+    tbl = db["upsert_many_case_key"]
+    tbl.insert_many([{"id": 1, "n": 1}])
+    tbl.upsert_many([{"ID": 1, "n": 10}], ["ID"])
+    assert len(tbl) == 1
+    assert tbl.find_one(id=1)["n"] == 10
+
+
 def test_upsert_many_heterogeneous_columns_batched(db):
     tbl = db["upsert_many_hetero_batched"]
     tbl.insert_many([{"id": 1, "x": "x1", "y": "y1"}, {"id": 2, "x": "x2", "y": "y2"}])

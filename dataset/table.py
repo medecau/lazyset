@@ -525,14 +525,25 @@ class Table:
                 # column at all (e.g. relying on an autoincrement id) has no
                 # real key identity to dedup on, so it always goes straight
                 # to insert, same as the row-by-row loop did.
+                # Normalize keys and each row's column names so a
+                # case-mismatched key (e.g. ['ID'] against an 'id' column)
+                # classifies and matches correctly, instead of KeyError-ing on
+                # the exact-match column collection or silently rerouting the
+                # row to a duplicate INSERT. Storing the normalized rows keeps
+                # the downstream update_many/insert_many aligned to the real
+                # column names.
+                norm_keys = [self._get_column_name(k) for k in keys]
                 deduped: dict[tuple[SQLWriteValue, ...], MutableRow] = {}
                 always_insert: list[MutableRow] = []
                 for row_ in batch:
-                    if all(k in row_ for k in keys):
-                        key_tuple = tuple(row_[k] for k in keys)
-                        deduped[key_tuple] = dict(row_)
+                    norm_row = {
+                        self._get_column_name(c): v for c, v in row_.items()
+                    }
+                    if all(k in norm_row for k in norm_keys):
+                        key_tuple = tuple(norm_row[k] for k in norm_keys)
+                        deduped[key_tuple] = norm_row
                     else:
-                        always_insert.append(dict(row_))
+                        always_insert.append(norm_row)
 
                 sample: MutableRow = {}
                 for synced_row in (*deduped.values(), *always_insert):
@@ -542,7 +553,7 @@ class Table:
                 self._sync_columns(sample, ensure, types=types)
 
                 if self._check_ensure(ensure):
-                    self.create_index(keys)
+                    self.create_index(norm_keys)
 
                 # Checked in its own sub-batches, independent of the
                 # caller's chunk_size (see _EXISTS_CHECK_BATCH above).
@@ -556,14 +567,14 @@ class Table:
                             and_(
                                 *(
                                     self.table.c[k] == v
-                                    for k, v in zip(keys, key_tuple, strict=True)
+                                    for k, v in zip(norm_keys, key_tuple, strict=True)
                                 )
                             )
                             for key_tuple in key_tuples
                         )
                     )
                     rp = self.db.executable.execute(
-                        select(*(self.table.c[k] for k in keys)).where(clause)
+                        select(*(self.table.c[k] for k in norm_keys)).where(clause)
                     )
                     existing_keys.update(tuple(result_row) for result_row in rp)
 
@@ -576,7 +587,7 @@ class Table:
 
                 if to_update:
                     updated += self.update_many(
-                        to_update, keys, len(to_update), ensure=False
+                        to_update, norm_keys, len(to_update), ensure=False
                     )
                 if to_insert:
                     inserted += self.insert_many(
