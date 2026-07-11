@@ -43,10 +43,11 @@ class Table:
     """Represents a table in a database and exposes common operations."""
 
     PRIMARY_DEFAULT = "id"
-    # upsert_many's existence check builds one OR-of-AND clause per distinct
-    # key; SQLite's default expression-tree depth limit is 1000, so this is
-    # capped independently of the caller's chunk_size to stay well under it.
-    _UPSERT_MANY_EXISTS_BATCH = 500
+    # The OR-of-AND existence check (upsert_many's classifier and
+    # update_many's non-sane-multi-rowcount fallback) builds one clause per
+    # distinct key; SQLite's default expression-tree depth limit is 1000, so
+    # it is sub-batched at this size independently of the caller's chunk_size.
+    _EXISTS_CHECK_BATCH = 500
 
     def __init__(
         self,
@@ -344,6 +345,33 @@ class Table:
                     sample[col] = row[col]
         self._sync_columns(sample, ensure, types=types)
 
+        # Normalize key names now that the columns exist, so a case-mismatched
+        # key (e.g. ['ID'] against an 'id' column) resolves instead of raising
+        # a bare KeyError on the exact-match column collection.
+        keys = [self._get_column_name(k) for k in keys]
+
+        # Bind names must not collide with a real column: a value column
+        # literally named like the WHERE bind (e.g. '_id') would otherwise
+        # overwrite it, and WHERE/SET sharing the bind would set the column to
+        # the key value. Derive key/value prefixes provably disjoint from
+        # every actual column name and build each param dict with only these
+        # synthetic keys.
+        existing = {c.name for c in self.table.columns}
+        key_prefix = "k_"
+        while any(name.startswith(key_prefix) for name in existing):
+            key_prefix = "_" + key_prefix
+        val_prefix = "v_"
+        while any(name.startswith(val_prefix) for name in existing):
+            val_prefix = "_" + val_prefix
+
+        where = and_(
+            True,
+            *(
+                self.table.c[key] == bindparam(f"{key_prefix}{i}")
+                for i, key in enumerate(keys)
+            ),
+        )
+
         updated = 0
         chunk: list[WriteRow] = []
         for index, row in enumerate(rows):
@@ -351,52 +379,82 @@ class Table:
 
             # Update when chunk_size is fulfilled or this is the last row
             if len(chunk) == chunk_size or index == len(rows) - 1:
-                # Rows in a chunk may carry different sets of value columns;
-                # group by the exact column set (computed before the rename
-                # below) so a row missing a column leaves it untouched
-                # instead of overwriting it with NULL. With ensure=False an
-                # unknown value column was never created, so drop it (like
-                # update()) rather than emit an UPDATE for it (CompileError).
-                groups: dict[frozenset[str], list[MutableRow]] = {}
+                # Group rows by their exact value-column set so a column a row
+                # omits is left untouched instead of NULLed. With ensure=False
+                # an unknown value column was never created, so drop it (like
+                # update()) rather than compile an UPDATE for it. Store the
+                # (key values, value dict) per row; the synthetic bind names
+                # are assigned per group so ordering is consistent.
+                groups: dict[
+                    frozenset[str], list[tuple[list[SQLWriteValue], MutableRow]]
+                ] = {}
                 for row_ in chunk:
-                    columns = frozenset(
-                        col
-                        for col in row_
-                        if col not in keys and self.has_column(col)
-                    )
-                    renamed = dict(row_)
+                    normalized = {
+                        self._get_column_name(col): val for col, val in row_.items()
+                    }
+                    key_values: list[SQLWriteValue] = []
                     for key in keys:
-                        if key not in renamed:
+                        if key not in normalized:
                             raise DatasetError(f"Row is missing key column: {key!r}")
-                        renamed[f"_{key}"] = renamed[key]
-                        renamed.pop(key)
-                    groups.setdefault(columns, []).append(renamed)
+                        key_values.append(normalized.pop(key))
+                    value_dict = {
+                        col: val
+                        for col, val in normalized.items()
+                        if self.has_column(col)
+                    }
+                    groups.setdefault(frozenset(value_dict), []).append(
+                        (key_values, value_dict)
+                    )
 
-                cl = [self.table.c[k] == bindparam(f"_{k}") for k in keys]
-                for columns, group_rows in groups.items():
+                for value_cols, group_items in groups.items():
+                    cols_list = sorted(value_cols)
                     stmt = (
                         self.table.update()
-                        .where(and_(True, *cl))
+                        .where(where)
                         .values(
-                            {col: bindparam(col, required=False) for col in columns}
+                            {
+                                col: bindparam(f"{val_prefix}{j}", required=False)
+                                for j, col in enumerate(cols_list)
+                            }
                         )
                     )
+                    group_rows: list[MutableRow] = []
+                    for key_values, value_dict in group_items:
+                        group_row: MutableRow = {
+                            f"{key_prefix}{i}": v for i, v in enumerate(key_values)
+                        }
+                        for j, col in enumerate(cols_list):
+                            group_row[f"{val_prefix}{j}"] = value_dict[col]
+                        group_rows.append(group_row)
+
                     rp = self.db.executable.execute(stmt, group_rows)
                     if rp.supports_sane_multi_rowcount():
                         updated += rp.rowcount
                     else:
-                        exists_clause = or_(
-                            *(
-                                and_(
-                                    *(
-                                        self.table.c[k] == group_row[f"_{k}"]
-                                        for k in keys
+                        # Dialect-dead on SQLite/PG/MySQL. Sub-batch the
+                        # existence check (SQLite caps the expression tree at
+                        # 1000) and union the matched key tuples so duplicate
+                        # keys are counted once, not summed.
+                        matched: set[tuple[SQLWriteValue, ...]] = set()
+                        step = self._EXISTS_CHECK_BATCH
+                        for start in range(0, len(group_rows), step):
+                            sub = group_rows[start : start + step]
+                            clause = or_(
+                                *(
+                                    and_(
+                                        *(
+                                            self.table.c[key] == gr[f"{key_prefix}{i}"]
+                                            for i, key in enumerate(keys)
+                                        )
                                     )
+                                    for gr in sub
                                 )
-                                for group_row in group_rows
                             )
-                        )
-                        updated += self.count(exists_clause)
+                            rp2 = self.db.executable.execute(
+                                select(*(self.table.c[k] for k in keys)).where(clause)
+                            )
+                            matched.update(tuple(r) for r in rp2)
+                        updated += len(matched)
                 self.db._auto_commit()
                 chunk = []
         return updated
@@ -487,10 +545,10 @@ class Table:
                     self.create_index(keys)
 
                 # Checked in its own sub-batches, independent of the
-                # caller's chunk_size (see _UPSERT_MANY_EXISTS_BATCH above).
+                # caller's chunk_size (see _EXISTS_CHECK_BATCH above).
                 existing_keys: set[tuple[SQLWriteValue, ...]] = set()
                 all_key_tuples = list(deduped.keys())
-                batch_size = self._UPSERT_MANY_EXISTS_BATCH
+                batch_size = self._EXISTS_CHECK_BATCH
                 for start in range(0, len(all_key_tuples), batch_size):
                     key_tuples = all_key_tuples[start : start + batch_size]
                     clause = or_(

@@ -782,6 +782,29 @@ def test_update_many_missing_key_column_raises(db):
         tbl.update_many([{"n": 2}], "id")
 
 
+def test_update_many_value_column_named_like_key(db):
+    # A value column literally named like the WHERE bindparam ('_id') used to
+    # collide with the key bind: the rename overwrote it and WHERE/SET shared
+    # the bind, so the column was set to the key value instead of its own.
+    tbl = db["update_many_underscore_col"]
+    tbl.insert_many(
+        [{"id": 1, "_id": "keep-me"}, {"id": 2, "_id": "keep-me-2"}]
+    )
+    tbl.update_many([{"id": 1, "_id": "updated"}], "id")
+    assert tbl.find_one(id=1)["_id"] == "updated"
+    assert tbl.find_one(id=2)["_id"] == "keep-me-2"
+
+
+def test_update_many_case_insensitive_key(db):
+    # A case-mismatched key (['ID'] against an 'id' column) must resolve and
+    # update the row, not KeyError on the exact-match column collection.
+    tbl = db["update_many_case_key"]
+    tbl.insert_many([{"id": 1, "n": 1}, {"id": 2, "n": 2}])
+    tbl.update_many([{"ID": 1, "n": 10}], ["ID"])
+    assert tbl.find_one(id=1)["n"] == 10
+    assert tbl.find_one(id=2)["n"] == 2
+
+
 def test_update_many_chunk_size_flush(db):
     tbl = db["update_many_chunk_flush"]
     tbl.insert_many([{"id": 1, "n": 1}, {"id": 2, "n": 2}])
