@@ -880,7 +880,7 @@ class Table:
         self,
         name: str,
         type: ColumnType,
-        **kwargs: object,  # noqa: A002
+        **kwargs: object,
     ) -> None:
         """Create a new column ``name`` of a specified type.
         ::
