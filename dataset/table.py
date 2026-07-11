@@ -771,55 +771,56 @@ class Table:
     def _generate_clause(
         self, column: str, op: str, value: SQLWriteValue
     ) -> ColumnElement[bool]:
-        if op in ("like",):
-            return self.table.c[column].like(value)
-        if op in ("ilike",):
-            return self.table.c[column].ilike(value)
-        if op in ("notlike",):
-            return self.table.c[column].notlike(value)
-        if op in ("notilike",):
-            return self.table.c[column].notilike(value)
-        if op in (">", "gt"):
-            return self.table.c[column] > value
-        if op in ("<", "lt"):
-            return self.table.c[column] < value
-        if op in (">=", "gte"):
-            return self.table.c[column] >= value
-        if op in ("<=", "lte"):
-            return self.table.c[column] <= value
-        if op in ("=", "==", "is"):
-            return self.table.c[column] == value
-        if op in ("!=", "<>", "not"):
-            return self.table.c[column] != value
-        if op in ("in",):
-            if not isinstance(value, (list, tuple, set)):
-                raise QueryError(f"'in' filter requires a list, got {type(value)}")
-            # Render the list inline (literal_execute) rather than one bind
-            # param per element, which blows SQLite's SQLITE_LIMIT_VARIABLE_
-            # NUMBER (and the 65535 cap on PostgreSQL/MySQL) for large lists.
-            return self.table.c[column].in_(
-                bindparam(None, list(value), literal_execute=True)
-            )
-        if op in ("notin",):
-            if not isinstance(value, (list, tuple, set)):
-                raise QueryError(f"'notin' filter requires a list, got {type(value)}")
-            return self.table.c[column].notin_(
-                bindparam(None, list(value), literal_execute=True)
-            )
-        if op in ("between", ".."):
-            if not isinstance(value, (list, tuple)) or len(value) != 2:
-                raise QueryError("'between' filter requires a list of two values")
-            start, end = value
-            return self.table.c[column].between(start, end)
-        if op in ("startswith",):
-            if not isinstance(value, str):
-                raise QueryError("'startswith' filter requires a string")
-            return self.table.c[column].startswith(value, autoescape=True)
-        if op in ("endswith",):
-            if not isinstance(value, str):
-                raise QueryError("'endswith' filter requires a string")
-            return self.table.c[column].endswith(value, autoescape=True)
-        raise QueryError(f"Unrecognized operator: {op}")
+        col = self.table.c[column]
+        match op:
+            case "like":
+                return col.like(value)
+            case "ilike":
+                return col.ilike(value)
+            case "notlike":
+                return col.notlike(value)
+            case "notilike":
+                return col.notilike(value)
+            case ">" | "gt":
+                return col > value
+            case "<" | "lt":
+                return col < value
+            case ">=" | "gte":
+                return col >= value
+            case "<=" | "lte":
+                return col <= value
+            case "=" | "==" | "is":
+                return col == value
+            case "!=" | "<>" | "not":
+                return col != value
+            case "in":
+                if not isinstance(value, (list, tuple, set)):
+                    raise QueryError(f"'in' filter requires a list, got {type(value)}")
+                # Render the list inline (literal_execute) rather than one bind
+                # param per element, which blows SQLite's SQLITE_LIMIT_VARIABLE_
+                # NUMBER (and the 65535 cap on PostgreSQL/MySQL) for large lists.
+                return col.in_(bindparam(None, list(value), literal_execute=True))
+            case "notin":
+                if not isinstance(value, (list, tuple, set)):
+                    raise QueryError(
+                        f"'notin' filter requires a list, got {type(value)}"
+                    )
+                return col.notin_(bindparam(None, list(value), literal_execute=True))
+            case "between" | "..":
+                if not isinstance(value, (list, tuple)) or len(value) != 2:
+                    raise QueryError("'between' filter requires a list of two values")
+                start, end = value
+                return col.between(start, end)
+            case "startswith":
+                if not isinstance(value, str):
+                    raise QueryError("'startswith' filter requires a string")
+                return col.startswith(value, autoescape=True)
+            case "endswith":
+                if not isinstance(value, str):
+                    raise QueryError("'endswith' filter requires a string")
+                return col.endswith(value, autoescape=True)
+            case _:
+                raise QueryError(f"Unrecognized operator: {op}")
 
     def _args_to_clause(
         self,
