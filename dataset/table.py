@@ -846,7 +846,12 @@ class Table:
 
             table.create_index(['name', 'country'])
         """
-        columns = [self._get_column_name(c) for c in ensure_strings(columns)]
+        # Dedup like has_index (dict.fromkeys, order-preserving): a repeated
+        # column would otherwise emit ON t (a, a) — rejected by MySQL
+        # (ERROR 1060) and SQLite alike.
+        columns = list(
+            dict.fromkeys(self._get_column_name(c) for c in ensure_strings(columns))
+        )
         with self.db.lock:
             if not self.exists:
                 raise DatasetError("Table has not been created yet.")

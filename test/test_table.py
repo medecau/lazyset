@@ -1250,6 +1250,18 @@ def test_create_index(table):
     assert table.has_index(["place"]) is True
 
 
+def test_create_index_dedups_columns(db):
+    # has_index dedups its columns with dict.fromkeys; create_index must
+    # too, or a repeated column emits ON t (a, a) — rejected by MySQL
+    # (ERROR 1060) and SQLite alike.
+    tbl = db["create_index_dedup"]
+    tbl.insert({"a": 1})
+    tbl.create_index(["a", "a"])
+    indexes = tbl.db.inspect.get_indexes("create_index_dedup")
+    assert len(indexes) == 1, indexes
+    assert indexes[0]["column_names"] == ["a"], indexes
+
+
 def test_create_index_missing_column_raises(table):
     with pytest.raises(DatasetError, match=r"^No such column: nonexistent_col$"):
         table.create_index(["nonexistent_col"])
