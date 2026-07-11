@@ -541,9 +541,7 @@ class Table:
                 deduped: dict[tuple[SQLWriteValue, ...], MutableRow] = {}
                 always_insert: list[MutableRow] = []
                 for row_ in batch:
-                    norm_row = {
-                        self._get_column_name(c): v for c, v in row_.items()
-                    }
+                    norm_row = {self._get_column_name(c): v for c, v in row_.items()}
                     if all(k in norm_row for k in norm_keys):
                         key_tuple = tuple(norm_row[k] for k in norm_keys)
                         deduped[key_tuple] = norm_row
