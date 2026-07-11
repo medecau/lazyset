@@ -226,7 +226,7 @@ def index_name(table: str, columns: list[str]) -> str:
     # Netstring-style join so distinct column lists never collide:
     # ["a", "b||c"] and ["a||b", "c"] must hash to different names.
     sig = "".join(f"{len(c)}:{c}" for c in columns)
-    key = sha1(sig.encode("utf-8")).hexdigest()[:16]
+    key = sha1(sig.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
     # PostgreSQL caps identifiers at 63 bytes and MySQL errors past 64. Keep
     # the hash suffix intact (it carries the column identity, so distinct
     # column sets stay distinct) and byte-trim the ix_<table> prefix,
