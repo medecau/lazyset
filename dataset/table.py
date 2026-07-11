@@ -619,9 +619,15 @@ class Table:
             return 0
         clause = self._args_to_clause(filters, clauses=clauses)
         stmt = self.table.delete().where(clause)
+        # On dialects without sane rowcount, rp.rowcount is unreliable; count
+        # the matching rows BEFORE the delete (afterwards they are gone).
+        # Dead on SQLite/PostgreSQL/MySQL (all sane) — parity with update().
+        pre = 0
+        if not self.db.executable.dialect.supports_sane_rowcount:
+            pre = self.count(clause)
         rp = self.db.executable.execute(stmt)
         self.db._auto_commit()
-        return rp.rowcount
+        return rp.rowcount if rp.supports_sane_rowcount() else pre
 
     def _reflect_table(self) -> None:
         """Load the tables definition from the database."""
