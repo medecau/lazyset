@@ -1225,6 +1225,91 @@ def test_sync_table_add_existing_column_is_idempotent(table):
     assert set(table.columns) == before
 
 
+def test_sync_table_concurrent_different_columns(tmp_path):
+    # Two threads first-writing DISTINCT columns to the SAME deferred Table
+    # race to create it. The create block re-checks _table under the lock, so
+    # the loser adds its column to the winner's table instead of overwriting
+    # _table with a schema-mismatched object (which then never creates its own
+    # column and fails to write it). A file-backed DB is needed for the
+    # threads to share a database.
+    db = connect(f"sqlite:///{tmp_path / 'race.db'}")
+    try:
+        tbl = db["race_tbl"]  # deferred; shared across both threads
+
+        original_reflect = type(tbl)._reflect_table
+        original_warn = type(tbl)._threading_warn
+        barrier = threading.Barrier(2)
+        reflected = threading.local()
+        holds_lock = threading.Event()
+        release_winner = threading.Event()
+        warn_calls = []
+        warn_lock = threading.Lock()
+
+        def synced_reflect(self):
+            # First reflect per thread: sync at the barrier so both threads see
+            # _table=None and pass the lock-free create check before either
+            # grabs the lock (_reflect_table releases db.lock before we wait).
+            if not getattr(reflected, "done", False):
+                reflected.done = True
+                original_reflect(self)
+                barrier.wait()
+            else:
+                original_reflect(self)
+
+        def synced_warn(self):
+            with warn_lock:
+                first = not warn_calls
+                warn_calls.append(1)
+            if first:
+                # The winner holds db.lock but hasn't created yet; keep holding
+                # so the loser blocks on the lock with _table still read as None
+                # (the stale decision the create-block re-check must catch).
+                holds_lock.set()
+                release_winner.wait(timeout=5)
+            original_warn(self)
+
+        errors = []
+
+        def writer(col):
+            # Call _sync_table directly with a distinct column so the
+            # create-race lands on the real columns (going through insert()
+            # would pre-create the table via the has_column precheck).
+            try:
+                tbl._sync_table((Column(col, Unicode),))
+            except Exception as e:  # noqa: BLE001
+                errors.append(e)
+
+        type(tbl)._reflect_table = synced_reflect
+        type(tbl)._threading_warn = synced_warn
+        try:
+            threads = [
+                threading.Thread(target=writer, args=("a",)),
+                threading.Thread(target=writer, args=("b",)),
+            ]
+            for t in threads:
+                t.start()
+            holds_lock.wait(timeout=5)
+            time.sleep(0.2)  # let the loser block on the lock with _table=None
+            release_winner.set()
+            for t in threads:
+                t.join()
+        finally:
+            type(tbl)._reflect_table = original_reflect
+            type(tbl)._threading_warn = original_warn
+
+        assert not errors, errors
+
+        # Verify the real DB schema via a fresh reflection, immune to any
+        # _table-cache poisoning on the shared wrapper: the loser overwriting
+        # _table would leave its column uncreated in the DB.
+        db._tables.pop("race_tbl", None)
+        fresh = db.load_table("race_tbl")
+        assert fresh.has_column("a"), fresh.columns
+        assert fresh.has_column("b"), fresh.columns
+    finally:
+        db.close()
+
+
 def test_load_missing_table_raises(db):
     tbl = db.load_table("truly_missing_load_table_xyz")
     with pytest.raises(

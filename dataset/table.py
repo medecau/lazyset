@@ -671,6 +671,14 @@ class Table:
                 raise DatasetError(f"Table does not exist: {self.name}")
             # Keep the lock scope small because this is run very often.
             with self.db.lock:
+                # Re-check under the lock: another thread may have created the
+                # table (possibly with a different column set) while we waited.
+                # Add our columns to it rather than overwrite _table with a
+                # DB-mismatched object — that would poison the schema cache and
+                # leave our own columns uncreated (checkfirst skips the CREATE).
+                if self._table is not None:
+                    self._add_missing_columns_locked(columns)
+                    return
                 self._threading_warn()
                 table = SQLATable(self.name, self.db.metadata, schema=self.db.schema)
                 if self._primary_id is not False:
@@ -695,13 +703,22 @@ class Table:
                 self.db._auto_commit()
         elif len(columns):
             with self.db.lock:
-                self._reflect_table()
-                self._threading_warn()
-                for column in columns:
-                    if not self.has_column(column.name):
-                        self.db.op.add_column(self.name, column, schema=self.db.schema)
-                self._reflect_table()
-                self.db._auto_commit()
+                self._add_missing_columns_locked(columns)
+
+    def _add_missing_columns_locked(self, columns: Sequence[Column[Any]]) -> None:
+        """Reflect the table and ADD COLUMN for any column not yet present.
+
+        The caller must hold ``self.db.lock``. Shared by the ordinary
+        add-column path and by the create-race loser, whose table another
+        thread has already created under the lock.
+        """
+        self._reflect_table()
+        self._threading_warn()
+        for column in columns:
+            if not self.has_column(column.name):
+                self.db.op.add_column(self.name, column, schema=self.db.schema)
+        self._reflect_table()
+        self.db._auto_commit()
 
     def _sync_columns(
         self,
@@ -731,6 +748,11 @@ class Table:
                 sync_columns[name] = Column(name, _type)
                 out[name] = value
         self._sync_table(list(sync_columns.values()))
+        # Known limitation (L6): this reads self._table lock-free, so a
+        # concurrent drop()/_flush_tables() could null it here and raise a
+        # spurious "no columns" error even though the columns were just
+        # created. A standalone guard would be cosmetic — it can't close the
+        # broader window of unsynchronized _table reads across the write path.
         if self._table is None:
             raise DatasetError(
                 f"Cannot write to {self.name!r}: no columns to create it with."
