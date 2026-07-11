@@ -89,13 +89,18 @@ class Table:
         This property guarantees to return a non-None SQLATable instance.
         If the table doesn't exist and auto_create is False, raises DatasetError.
         """
-        if self._table is None:
+        # Snapshot _table into a local and branch/return on that: a concurrent
+        # drop()/_flush_tables() can null self._table between reads, and
+        # returning None here would AttributeError on the caller's .select().
+        table = self._table
+        if table is None:
             self._sync_table(())
-        if self._table is None:
-            # Deferred columnless auto-create table: transient view until
-            # the first column is added.
+            table = self._table
+        if table is None:
+            # Deferred columnless auto-create table (or a concurrent null in
+            # the read gap): transient view until the first column is added.
             return SQLATable(self.name, self.db.metadata, schema=self.db.schema)
-        return self._table
+        return table
 
     @property
     def _column_keys(self) -> dict[str, str]:

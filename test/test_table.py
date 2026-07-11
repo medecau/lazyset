@@ -1191,6 +1191,34 @@ def test_has_column_none_and_columns_before_sync(db, table):
     assert "place" in fresh.columns
 
 
+def test_table_property_returns_table_not_none(db):
+    tbl = db["snapshot_test"]
+    tbl.insert({"a": 1})
+    real = tbl._table
+    assert real is not None
+
+    # A concurrent drop/_flush_tables can null _table between the property's
+    # internal reads. Serve the valid table on the first reads, then None: the
+    # property must still return the snapshotted table, never None (which would
+    # AttributeError on .select()/.insert() downstream).
+    reads = []
+
+    class _NullingTable:
+        def __get__(self, obj, objtype=None):
+            reads.append(1)
+            return real if len(reads) <= 2 else None
+
+        def __set__(self, obj, value):
+            pass
+
+    type(tbl)._table = _NullingTable()
+    try:
+        result = tbl.table
+    finally:
+        del type(tbl)._table
+    assert result is real
+
+
 def test_sync_table_add_existing_column_is_idempotent(table):
     before = set(table.columns)
     table._sync_table((Column("place", Unicode),))
