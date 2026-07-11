@@ -98,7 +98,7 @@ def make_sqlite_url(
     if not params:
         # Non-URI form: SQLite reads the raw path, so leave it unencoded
         # (it would treat %20 literally).
-        return "sqlite:///" + path
+        return f"sqlite:///{path}"
     params["uri"] = "true"
     # URI form: percent-encode the path so ? / # / % in a filename can't
     # mangle the query or look like an existing escape (keep "/" as the
@@ -175,7 +175,7 @@ def normalize_column_name(name: str) -> str:
     # characters first, then trim any trailing multi-byte overflow.
     name = name[:63]
     while len(name.encode("utf-8")) >= 64:
-        name = name[: len(name) - 1]
+        name = name[:-1]
     return name
 
 
@@ -203,7 +203,7 @@ def normalize_table_name(name: str) -> str:
     # limit to 63 characters first, then trim any trailing multi-byte overflow.
     name = name[:63]
     while len(name.encode("utf-8")) >= 64:
-        name = name[: len(name) - 1]
+        name = name[:-1]
     return name
 
 

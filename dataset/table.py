@@ -364,10 +364,10 @@ class Table:
         existing = {c.name for c in self.table.columns}
         key_prefix = "k_"
         while any(name.startswith(key_prefix) for name in existing):
-            key_prefix = "_" + key_prefix
+            key_prefix = f"_{key_prefix}"
         val_prefix = "v_"
         while any(name.startswith(val_prefix) for name in existing):
-            val_prefix = "_" + val_prefix
+            val_prefix = f"_{val_prefix}"
 
         where = and_(
             True,
@@ -834,8 +834,10 @@ class Table:
             elif isinstance(value, (list, tuple, set)):
                 clauses.append(self._generate_clause(column, "in", value))
             elif isinstance(value, dict):
-                for op, op_value in value.items():
-                    clauses.append(self._generate_clause(column, op, op_value))
+                clauses.extend(
+                    self._generate_clause(column, op, op_value)
+                    for op, op_value in value.items()
+                )
             else:
                 clauses.append(self._generate_clause(column, "=", value))
         return and_(True, *clauses)
@@ -1010,10 +1012,11 @@ class Table:
                 # apparently. This defines (a somewhat random) prefix that
                 # will be captured by the index, after which I assume the engine
                 # conducts a more linear scan:
-                mysql_length = {}
-                for col in columns_:
-                    if isinstance(col.type, MYSQL_LENGTH_TYPES):
-                        mysql_length[col.name] = 10
+                mysql_length = {
+                    col.name: 10
+                    for col in columns_
+                    if isinstance(col.type, MYSQL_LENGTH_TYPES)
+                }
                 kw["mysql_length"] = mysql_length
 
                 idx = Index(name, *columns_, **kw)  # type: ignore[arg-type]
