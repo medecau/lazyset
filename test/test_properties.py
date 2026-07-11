@@ -199,6 +199,17 @@ def test_normalize_table_name_rejects_blank(s):
         normalize_table_name(s)
 
 
+def test_normalize_table_name_byte_boundary():
+    """A name that is 63 chars but 64 *bytes* must lose exactly the overflow char."""
+    name = "a" * 62 + "é"
+    assert len(name) == 63
+    assert len(name.encode("utf-8")) == 64
+
+    out = normalize_table_name(name)
+    assert out == "a" * 62
+    assert len(out.encode("utf-8")) == 62
+
+
 # ---------------------------------------------------------------------------
 # ensure_strings
 # ---------------------------------------------------------------------------
@@ -335,6 +346,17 @@ def test_index_name_distinct_column_lists(a, b):
 def test_index_name_exact_value():
     # Precomputed sha1("1:a1:b")[:16] pins the netstring join separator.
     assert index_name("t", ["a", "b"]) == "ix_t_95253b90414f24c6"
+
+
+def test_index_name_byte_capped():
+    # A long table name would overflow PostgreSQL's 63-byte identifier limit;
+    # the name must be capped while keeping the 16-char hash suffix, so
+    # distinct column sets on the same table still get distinct names.
+    long_table = "t" * 100
+    name = index_name(long_table, ["a"])
+    assert len(name.encode("utf-8")) <= 63
+    assert name.endswith(index_name("t", ["a"])[-16:])
+    assert index_name(long_table, ["a"]) != index_name(long_table, ["b"])
 
 
 # ---------------------------------------------------------------------------

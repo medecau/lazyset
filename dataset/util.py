@@ -185,9 +185,15 @@ def normalize_table_name(name: str) -> str:
     """Check if the table name is obviously invalid."""
     if not isinstance(name, str):
         raise ValueError(f"Invalid table name: {name!r}")
-    name = name.strip()[:63]
+    # Validate emptiness on the stripped name before truncating.
+    name = name.strip()
     if not len(name):
         raise ValueError(f"Invalid table name: {name!r}")
+    # Table names, like columns, are capped at 63 *bytes* in PostgreSQL:
+    # limit to 63 characters first, then trim any trailing multi-byte overflow.
+    name = name[:63]
+    while len(name.encode("utf-8")) >= 64:
+        name = name[: len(name) - 1]
     return name
 
 
@@ -206,9 +212,14 @@ def safe_url(url: str) -> str:
 
 
 def index_name(table: str, columns: list[str]) -> str:
-    """Generate an artificial index name."""
+    """Generate an artificial index name, capped at 63 bytes."""
     # Netstring-style join so distinct column lists never collide:
     # ["a", "b||c"] and ["a||b", "c"] must hash to different names.
     sig = "".join(f"{len(c)}:{c}" for c in columns)
     key = sha1(sig.encode("utf-8")).hexdigest()[:16]
-    return f"ix_{table}_{key}"
+    # PostgreSQL caps identifiers at 63 bytes and MySQL errors past 64. Keep
+    # the hash suffix intact (it carries the column identity, so distinct
+    # column sets stay distinct) and byte-trim the ix_<table> prefix,
+    # decoding codepoint-safely so a multi-byte char is never split.
+    prefix = f"ix_{table}".encode()[: 63 - 1 - len(key)].decode("utf-8", "ignore")
+    return f"{prefix}_{key}"
