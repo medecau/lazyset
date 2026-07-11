@@ -31,7 +31,6 @@ from dataset.util import (
     normalize_column_key,
     normalize_column_name,
     normalize_table_name,
-    pad_chunk_columns,
 )
 
 if TYPE_CHECKING:
@@ -235,7 +234,8 @@ class Table:
 
         Returns the number of rows inserted.
         """
-        # Sync table before inputting rows.
+        # Sync table before inputting rows. Column creation is legitimately
+        # call-wide, so union every row's keys for the _sync_columns pass.
         sync_row: MutableRow = {}
         for row in rows:
             # Get a sample of the new column(s) from the row: dict membership
@@ -245,9 +245,6 @@ class Table:
                     sync_row[key] = row[key]
         self._sync_columns(sync_row, ensure, types=types)
 
-        # Get columns name list to be used for padding later.
-        columns = sync_row.keys()
-
         inserted = 0
         chunk: list[MutableRow] = []
         for index, row in enumerate(rows):
@@ -255,8 +252,19 @@ class Table:
 
             # Insert when chunk_size is fulfilled or this is the last row
             if len(chunk) == chunk_size or index == len(rows) - 1:
-                chunk = pad_chunk_columns(chunk, columns)
-                self.db.executable.execute(self.table.insert(), chunk)
+                # Group by the exact column set so an omitted column is left
+                # out of its group's INSERT and the DB applies its default,
+                # rather than being padded to the union with an explicit NULL
+                # (which would override server_default). executemany requires
+                # a uniform key set per statement, which the grouping ensures.
+                # Rows may be reordered across keyset groups within a chunk;
+                # only visible via autoincrement PK order, and the method
+                # returns a count, so no contract breaks.
+                groups: dict[frozenset[str], list[MutableRow]] = {}
+                for chunk_row in chunk:
+                    groups.setdefault(frozenset(chunk_row), []).append(chunk_row)
+                for group_rows in groups.values():
+                    self.db.executable.execute(self.table.insert(), group_rows)
                 self.db._auto_commit()
                 inserted += len(chunk)
                 chunk = []

@@ -575,6 +575,17 @@ def test_insert_many_chunk_size_flush(db):
     assert len(tbl) == 4
 
 
+def test_insert_many_preserves_server_default(db):
+    # A column omitted from a given row must fall back to its DB default,
+    # matching insert(). The old pad-to-union step bound an explicit NULL,
+    # overriding the server_default.
+    tbl = db["insert_many_server_default"]
+    tbl.create_column("status", db.types.text, server_default="active")
+    tbl.insert_many([{"id": 1, "status": "custom"}, {"id": 2}])
+    assert tbl.find_one(id=1)["status"] == "custom"
+    assert tbl.find_one(id=2)["status"] == "active"
+
+
 def test_chunked_insert(table):
     data = TEST_DATA * 100
     with chunked.ChunkedInsert(table) as chunk_tbl:
@@ -630,6 +641,19 @@ def test_chunked_insert_preserves_values(db):
     rows = list(tbl.find(order_by="a"))
     assert rows[0]["a"] == 1 and rows[0]["b"] == "x"
     assert rows[1]["a"] == 2 and rows[1]["b"] is None
+
+
+def test_chunked_insert_preserves_default_across_chunks(db):
+    # ChunkedInsert padded to a lifetime self.fields union that was never
+    # reset, so a column supplied in an earlier chunk got bound as NULL in a
+    # later chunk that omitted it — overriding the DB default across flushes.
+    tbl = db["chunked_default_across_chunks"]
+    tbl.create_column("status", db.types.text, server_default="active")
+    with chunked.ChunkedInsert(tbl, chunksize=1) as inserter:
+        inserter.insert({"id": 1, "status": "custom"})  # chunk 1 supplies it
+        inserter.insert({"id": 2})  # chunk 2 omits it -> keeps the default
+    assert tbl.find_one(id=1)["status"] == "custom"
+    assert tbl.find_one(id=2)["status"] == "active"
 
 
 def test_chunked_update_groups_by_field_set(db):

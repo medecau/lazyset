@@ -60,17 +60,15 @@ class ChunkedInsert(_Chunker):
         chunksize: int = 1000,
         callback: _Callback | None = None,
     ) -> None:
-        self.fields: set[str] = set()
         super().__init__(table, chunksize, callback)
 
     def insert(self, item: WriteRow) -> None:
-        self.fields.update(item.keys())
         super()._queue_add(item)
 
     def flush(self) -> None:
-        for item in self.queue:
-            for field in self.fields:
-                item[field] = item.get(field)
+        # No cross-row padding here: insert_many groups the queue by column
+        # set, so a row omitting a column keeps that column's DB default
+        # instead of being NULLed out to a lifetime field union.
         if self.callback is not None:
             self.callback(self.queue)
         self.table.insert_many(self.queue)

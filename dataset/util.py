@@ -212,14 +212,3 @@ def index_name(table: str, columns: list[str]) -> str:
     sig = "".join(f"{len(c)}:{c}" for c in columns)
     key = sha1(sig.encode("utf-8")).hexdigest()[:16]
     return f"ix_{table}_{key}"
-
-
-def pad_chunk_columns(
-    chunk: list[MutableRow], columns: Iterable[str]
-) -> list[MutableRow]:
-    """Given a set of items to be inserted, make sure they all have the
-    same columns by padding columns with None if they are missing."""
-    for record in chunk:
-        for column in columns:
-            record.setdefault(column, None)
-    return chunk
