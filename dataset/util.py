@@ -175,10 +175,15 @@ def normalize_column_name(name: str) -> str:
 
 
 def normalize_column_key(name: str | None) -> str | None:
-    """Return a comparable column name."""
+    """Return a comparable column name.
+
+    Folds case and surrounding whitespace (the deliberate, tested
+    case-insensitivity), but preserves internal spaces: "full name" and
+    "fullname" are distinct columns and must not collapse to one key.
+    """
     if name is None or not isinstance(name, str):
         return None
-    return name.upper().strip().replace(" ", "")
+    return name.upper().strip()
 
 
 def normalize_table_name(name: str) -> str:

@@ -243,6 +243,19 @@ def test_case_insensitive_lookup(db):
     assert len(list(tbl.find(PLACE="Berlin"))) == 3
 
 
+def test_columns_differing_by_space_not_conflated(db):
+    # "full name" and "fullname" are distinct columns; the old space-collapse
+    # in normalize_column_key merged them, hiding one behind the other.
+    tbl = db["space_cols"]
+    tbl.create_column("full name", db.types.text)
+    tbl.create_column("fullname", db.types.text)
+    assert tbl.has_column("full name")
+    assert tbl.has_column("fullname")
+    assert "full name" in tbl.columns
+    assert "fullname" in tbl.columns
+    assert len(tbl.columns) == 3, tbl.columns  # id + both
+
+
 @pytest.mark.parametrize("bad_name", [None, "", "-", "foo.bar"])
 def test_invalid_column_names(db, bad_name):
     tbl = db["weather"]

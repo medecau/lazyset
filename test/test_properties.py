@@ -165,7 +165,6 @@ def test_normalize_column_key_invariants(x):
     assert out is not None
     assert out == out.upper()
     assert out == out.strip()
-    assert " " not in out
     assert normalize_column_key(out) == out  # idempotent
     # Case-insensitive: upper/lower forms collapse to the same key.
     assert normalize_column_key(x.lower()) == normalize_column_key(x.upper())
@@ -177,7 +176,16 @@ def test_normalize_column_key_none():
 
 def test_normalize_column_key_exact():
     assert normalize_column_key(123) is None  # type: ignore[arg-type]
-    assert normalize_column_key("a b") == "AB"
+    # Internal spaces are significant (only surrounding whitespace is folded).
+    assert normalize_column_key("a b") == "A B"
+    assert normalize_column_key("  a b  ") == "A B"
+
+
+def test_normalize_column_key_preserves_internal_space():
+    # "full name" and "fullname" are distinct columns; the old space-collapse
+    # mapped both to one key, silently conflating them on a reflected schema.
+    assert normalize_column_key("full name") == "FULL NAME"
+    assert normalize_column_key("full name") != normalize_column_key("fullname")
 
 
 # ---------------------------------------------------------------------------

@@ -58,6 +58,9 @@ changes must be reconstructed from revision history.*
       column is created before the UPDATE, and an empty write to a deferred `primary_id=False`
       table raises a clear `DatasetError` instead of a raw `CompileError`/`KeyError`. *(behavior
       change)*
+    - **`normalize_column_key`**: no longer collapses internal spaces (kept only the deliberate
+      case/whitespace folding, `upper().strip()`). Columns like `"full name"` and `"fullname"`
+      are now distinct instead of silently conflated on a reflected schema. *(behavior change)*
   - **Build system**: Migrated from setuptools to modern pyproject.toml with Hatchling (PEP 621)
   - **Linting**: Replaced flake8 with ruff for faster, more comprehensive linting
   - **CI/CD**: Updated GitHub Actions to use modern action versions (checkout@v4, setup-python@v5)
