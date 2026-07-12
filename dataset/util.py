@@ -1,4 +1,3 @@
-from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from datetime import date, datetime
 from decimal import Decimal
@@ -7,7 +6,7 @@ from typing import Any
 from urllib.parse import quote, urlencode, urlparse, urlunparse
 
 from sqlalchemy import Connection, ResultProxy
-from sqlalchemy.engine import Row
+from sqlalchemy.engine import Row as SARow
 from sqlalchemy.exc import ResourceClosedError
 
 QUERY_STEP = 1000
@@ -24,37 +23,61 @@ SQLPlainValue = (
     | date  # DATE
     | datetime  # DATETIME, TIMESTAMP
 )
-SQLWriteValue = (
+# A single value that can be written to a column (JSON columns accept a
+# dict/list of plain values).
+SQLValue = (
     SQLPlainValue
     | dict[str, SQLPlainValue]  # JSON, JSONB
     | list[SQLPlainValue]  # JSON arrays
 )
+# A value accepted by a find()/count()/delete()/where filter: a plain
+# equality value, a membership sequence (turned into an ``IN`` query), or a
+# ``{operator: value}`` mapping (see Table._generate_clause).
+FilterValue = (
+    SQLValue
+    | list[SQLValue]
+    | tuple[SQLValue, ...]
+    | set[SQLValue]
+    | dict[str, SQLValue]
+)
 
 # Type alias for input rows (dict-like with SQL-compatible values)
-WriteRow = Mapping[str, SQLWriteValue]
+WriteRow = Mapping[str, SQLValue]
 # Mutable row dict — used where rows are built up or mutated in place
-MutableRow = dict[str, SQLWriteValue]
-OutRow = Mapping[str, Any]
-RowFactory = Callable[[Iterable[tuple[str, Any]]], OutRow]
+MutableRow = dict[str, SQLValue]
+# A row read back from the database (values already converted by the driver).
+Row = Mapping[str, Any]
+RowFactory = Callable[[Iterable[tuple[str, Any]]], Row]
 
-row_factory: RowFactory = OrderedDict
 
-
-def convert_row(factory: RowFactory, row: Row[Any]) -> OutRow:
+def convert_row(factory: RowFactory, row: SARow[Any]) -> Row:
     return factory(row._mapping.items())  # type: ignore[arg-type]
 
 
 class DatasetError(Exception):
-    pass
+    """Base class for every error raised by dataset."""
 
 
 class QueryError(DatasetError):
-    pass
+    """An invalid filter or query construction was requested."""
+
+
+class SchemaError(DatasetError, ValueError):
+    """A schema constraint was violated (bad name, missing column to create).
+
+    Inherits :class:`ValueError` as well as :class:`DatasetError` so callers
+    that historically caught ``ValueError`` on invalid identifiers keep
+    working.
+    """
+
+
+class NoSuchColumnError(SchemaError):
+    """A referenced column does not exist on the table."""
 
 
 def iter_result_proxy(
     rp: ResultProxy[Any], step: int | None = None
-) -> Iterator[Row[Any]]:
+) -> Iterator[SARow[Any]]:
     """Iterate over the ResultProxy."""
     while True:
         chunk = rp.fetchall() if step is None else rp.fetchmany(size=step)
@@ -81,13 +104,15 @@ def make_sqlite_url(
     # https://www.sqlite.org/uri.html
     params: dict[str, Any] = {}
     if cache:
-        assert cache in ("shared", "private")
+        if cache not in ("shared", "private"):
+            raise ValueError(f"Invalid SQLite cache mode: {cache!r}")
         params["cache"] = cache
     if timeout:
         # Note: if timeout is None, it uses the default timeout
         params["timeout"] = timeout
     if mode:
-        assert mode in ("ro", "rw", "rwc")
+        if mode not in ("ro", "rw", "rwc"):
+            raise ValueError(f"Invalid SQLite access mode: {mode!r}")
         params["mode"] = mode
     if nolock:
         params["nolock"] = 1
@@ -106,14 +131,21 @@ def make_sqlite_url(
     return "sqlite:///file:" + quote(path, safe="/") + "?" + urlencode(params)
 
 
-class ResultIter(Iterator[OutRow]):
-    """SQLAlchemy ResultProxies are not iterable to get a
-    list of dictionaries. This is to wrap them."""
+class Results(Iterator[Row]):
+    """Wrap a SQLAlchemy ResultProxy as an iterator of dict-like rows.
+
+    Also usable as a context manager so the underlying result/connection is
+    released on exit::
+
+        with table.find(country='France') as rows:
+            for row in rows:
+                ...
+    """
 
     def __init__(
         self,
         result_proxy: ResultProxy[Any] | None,
-        row_type: RowFactory = row_factory,
+        row_type: RowFactory = dict,
         step: int | None = None,
         connection: Connection | None = None,
     ):
@@ -122,7 +154,7 @@ class ResultIter(Iterator[OutRow]):
         self._conn = connection
         if result_proxy is None:
             self.keys: list[str] = []
-            self._iter: Iterator[Row[Any]] = iter([])
+            self._iter: Iterator[SARow[Any]] = iter([])
         else:
             try:
                 self.keys = list(result_proxy.keys())
@@ -131,17 +163,21 @@ class ResultIter(Iterator[OutRow]):
                 self.keys = []
                 self._iter = iter([])
 
-    def __next__(self) -> OutRow:
+    def __next__(self) -> Row:
         try:
             return convert_row(self.row_type, next(self._iter))
         except StopIteration:
             self.close()
             raise
 
-    next = __next__
-
-    def __iter__(self) -> Iterator[OutRow]:
+    def __iter__(self) -> Iterator[Row]:
         return self
+
+    def __enter__(self) -> "Results":
+        return self
+
+    def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
+        self.close()
 
     def close(self) -> None:
         if self.result_proxy is not None:
@@ -170,13 +206,13 @@ def normalize_column_name(name: str, max_bytes: int | None = None) -> str:
     default applies only the character cap.
     """
     if not isinstance(name, str):
-        raise ValueError(f"{name!r} is not a valid column name.")
+        raise SchemaError(f"{name!r} is not a valid column name.")
 
     # Validate the full stripped name *before* truncating: a trailing "."
     # or "-" beyond the cap would otherwise be sliced off and slip through.
     name = name.strip()
     if not len(name) or "." in name or "-" in name:
-        raise ValueError(f"{name!r} is not a valid column name.")
+        raise SchemaError(f"{name!r} is not a valid column name.")
 
     if max_bytes is not None:
         # PostgreSQL truncates identifiers to max_bytes bytes server-side;
@@ -208,11 +244,11 @@ def normalize_table_name(name: str, max_bytes: int | None = None) -> str:
     default applies only the character cap.
     """
     if not isinstance(name, str):
-        raise ValueError(f"Invalid table name: {name!r}")
+        raise SchemaError(f"Invalid table name: {name!r}")
     # Validate emptiness on the stripped name before truncating.
     name = name.strip()
     if not len(name):
-        raise ValueError(f"Invalid table name: {name!r}")
+        raise SchemaError(f"Invalid table name: {name!r}")
     if max_bytes is not None:
         # PostgreSQL truncates identifiers to max_bytes bytes server-side;
         # emulate so our in-memory name equals the stored one. SQLite and

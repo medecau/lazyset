@@ -22,6 +22,7 @@ from sqlalchemy.types import BigInteger, Boolean, Date, DateTime, TypeEngine
 
 from dataset.types import ColumnType, Types
 from dataset.util import (
+    SchemaError,
     ensure_strings,
     index_name,
     make_sqlite_url,
@@ -82,9 +83,9 @@ def test_normalize_column_name_rejects_dot_past_truncation():
     Previously the ``[:63]`` slice ran before the charset check, so a long
     name ending in '.' was silently truncated-and-accepted.
     """
-    with pytest.raises(ValueError):
+    with pytest.raises(SchemaError):
         normalize_column_name("a" * 63 + ".")
-    with pytest.raises(ValueError):
+    with pytest.raises(SchemaError):
         normalize_column_name("a" * 70 + "-")
 
 
@@ -95,18 +96,18 @@ def test_index_name_distinct_for_ambiguous_columns():
 
 def test_normalize_error_messages():
     """Anchored messages pin the exact wording, not just that *some* error fires."""
-    with pytest.raises(ValueError, match=r"^123 is not a valid column name\.$"):
+    with pytest.raises(SchemaError, match=r"^123 is not a valid column name\.$"):
         normalize_column_name(123)  # type: ignore[arg-type]
 
     long_name = "a" * 63 + "."
     expected = re.escape(f"{long_name!r} is not a valid column name.")
-    with pytest.raises(ValueError, match=f"^{expected}$"):
+    with pytest.raises(SchemaError, match=f"^{expected}$"):
         normalize_column_name(long_name)
 
-    with pytest.raises(ValueError, match=r"^Invalid table name: 123$"):
+    with pytest.raises(SchemaError, match=r"^Invalid table name: 123$"):
         normalize_table_name(123)  # type: ignore[arg-type]
 
-    with pytest.raises(ValueError, match=r"^Invalid table name: ''$"):
+    with pytest.raises(SchemaError, match=r"^Invalid table name: ''$"):
         normalize_table_name("  ")
 
 
@@ -167,13 +168,13 @@ def test_normalize_names_long_default_not_capped():
 @example(s="a" * 63)
 def test_normalize_column_name_rejects_dot(s):
     # Appending '.' makes any input invalid, regardless of length.
-    with pytest.raises(ValueError):
+    with pytest.raises(SchemaError):
         normalize_column_name(s + ".")
 
 
 @given(s=st.text(alphabet=" \t\n\r\f\v", max_size=10))
 def test_normalize_column_name_rejects_blank(s):
-    with pytest.raises(ValueError):
+    with pytest.raises(SchemaError):
         normalize_column_name(s)
 
 
@@ -240,7 +241,7 @@ def test_normalize_table_name_invariants(name):
 
 @given(s=st.text(alphabet=" \t\n\r", max_size=10))
 def test_normalize_table_name_rejects_blank(s):
-    with pytest.raises(ValueError):
+    with pytest.raises(SchemaError):
         normalize_table_name(s)
 
 

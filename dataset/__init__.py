@@ -4,7 +4,18 @@ from typing import Any
 
 from dataset.database import Database
 from dataset.table import Table
-from dataset.util import DatasetError, OutRow, QueryError, RowFactory, row_factory
+from dataset.util import (
+    DatasetError,
+    FilterValue,
+    NoSuchColumnError,
+    QueryError,
+    Results,
+    Row,
+    RowFactory,
+    SchemaError,
+    SQLValue,
+    WriteRow,
+)
 
 # shut up useless SA warning:
 warnings.filterwarnings("ignore", "Unicode type received non-unicode bind param value.")
@@ -15,10 +26,16 @@ warnings.filterwarnings(
 __all__ = [
     "Database",
     "DatasetError",
-    "OutRow",
+    "FilterValue",
+    "NoSuchColumnError",
     "QueryError",
+    "Results",
+    "Row",
     "RowFactory",
+    "SQLValue",
+    "SchemaError",
     "Table",
+    "WriteRow",
     "connect",
 ]
 __version__ = "3.0.0"
@@ -29,7 +46,7 @@ def connect(
     schema: str | None = None,
     engine_kwargs: dict[str, Any] | None = None,
     ensure_schema: bool = True,
-    row_type: RowFactory = row_factory,
+    row_type: RowFactory = dict,
     sqlite_wal_mode: bool = True,
     on_connect_statements: list[str] | None = None,
 ) -> Database:

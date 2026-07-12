@@ -15,10 +15,11 @@ from dataset.table import Table
 from dataset.types import ColumnType, Types
 from dataset.util import (
     QUERY_STEP,
-    ResultIter,
+    DatasetError,
+    Results,
     RowFactory,
+    SchemaError,
     normalize_table_name,
-    row_factory,
     safe_url,
 )
 
@@ -34,7 +35,7 @@ class Database:
         schema: str | None = None,
         engine_kwargs: dict[str, Any] | None = None,
         ensure_schema: bool = True,
-        row_type: RowFactory = row_factory,
+        row_type: RowFactory = dict,
         sqlite_wal_mode: bool = True,
         on_connect_statements: list[str] | None = None,
     ) -> None:
@@ -99,7 +100,7 @@ class Database:
             tid = threading.get_ident()
             if tid not in self.connections:
                 if self.engine is None:
-                    raise RuntimeError("Database is closed")
+                    raise DatasetError("Database is closed")
                 self.connections[tid] = self.engine.connect()
             return self.connections[tid]
 
@@ -302,9 +303,10 @@ class Database:
             table5 = db.create_table('population5',
                                      primary_id=False)
         """
-        assert not isinstance(primary_type, str), (
-            "Text-based primary_type support is dropped, use db.types."
-        )
+        if isinstance(primary_type, str):
+            raise SchemaError(
+                "Text-based primary_type support is dropped, use db.types."
+            )
         table_name = normalize_table_name(table_name, max_bytes=self._max_ident_bytes)
         with self.lock:
             if table_name not in self._tables:
@@ -366,7 +368,7 @@ class Database:
         """Completion for table names with IPython."""
         return self.tables
 
-    def query(self, query: str | Executable, **kwargs: Any) -> ResultIter:
+    def query(self, query: str | Executable, **kwargs: Any) -> Results:
         """Run a statement on the database directly.
 
         Allows for the execution of arbitrary read/write queries. A query can
@@ -395,7 +397,7 @@ class Database:
             rp = self.executable.execute(query, kwargs)
         else:
             rp = self.executable.execute(query)
-        return ResultIter(rp, row_type=self.row_type, step=_step)
+        return Results(rp, row_type=self.row_type, step=_step)
 
     def __repr__(self) -> str:
         """Text representation contains the URL."""

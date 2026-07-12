@@ -10,9 +10,9 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
-from dataset import connect
+from dataset import DatasetError, SchemaError, connect
 from dataset.database import Database
-from dataset.util import ResultIter
+from dataset.util import Results
 
 from .sample_data import TEST_CITY_1, TEST_DATA
 
@@ -152,7 +152,7 @@ def test_load_table(db, table):
 
 
 def test_query(db, table):
-    r = db.query("SELECT COUNT(*) AS num FROM weather").next()
+    r = next(db.query("SELECT COUNT(*) AS num FROM weather"))
     assert r["num"] == len(TEST_DATA), r
 
 
@@ -162,7 +162,7 @@ def test_table_cache_updates(db):
     tbl1.insert(data)
     data["id"] = 1
     tbl2 = db.get_table("people")
-    assert dict(tbl2.all().next()) == dict(data), (tbl2.all().next(), data)
+    assert dict(next(tbl2.all())) == dict(data), (next(tbl2.all()), data)
 
 
 def test_thread_connections_released():
@@ -296,7 +296,7 @@ def test_closed_database_raises():
     db = connect()
     db["closed_test"].insert({"a": 1})
     db.close()
-    with pytest.raises(RuntimeError):
+    with pytest.raises(DatasetError):
         _ = db.executable
 
 
@@ -326,7 +326,7 @@ def test_result_iter_attributes():
     db = connect()
     conn = db.executable
     rp = conn.execute(text("SELECT 1 AS a, 2 AS b"))
-    it = ResultIter(rp, connection=conn)
+    it = Results(rp, connection=conn)
     assert it.result_proxy is rp
     assert it.keys == ["a", "b"]
     assert dict(next(it)) == {"a": 1, "b": 2}
@@ -339,7 +339,7 @@ def test_result_iter_attributes():
 def test_result_iter_closed_result():
     db = connect()
     # DDL statements return a result proxy that raises ResourceClosedError
-    # on .keys(); ResultIter must fall back to an empty iterator.
+    # on .keys(); Results must fall back to an empty iterator.
     it = db.query("CREATE TABLE result_iter_ddl (id INTEGER)")
     assert it.keys == []
     assert list(it) == []
@@ -363,13 +363,13 @@ def test_dialect_flags(db):
 def test_sqlite_wal_mode_for_file_db():
     with tempfile.NamedTemporaryFile(suffix=".db") as f:
         db = connect(f"sqlite:///{f.name}")
-        mode = list(db.query("PRAGMA journal_mode").next().values())[0]
+        mode = list(next(db.query("PRAGMA journal_mode")).values())[0]
         assert mode.lower() == "wal"
         db.close()
 
     with tempfile.NamedTemporaryFile(suffix=".db") as f:
         db = connect(f"sqlite:///{f.name}", sqlite_wal_mode=False)
-        mode = list(db.query("PRAGMA journal_mode").next().values())[0]
+        mode = list(next(db.query("PRAGMA journal_mode")).values())[0]
         assert mode.lower() != "wal"
         db.close()
 
@@ -380,7 +380,7 @@ def test_constructor_defaults_direct():
     with tempfile.NamedTemporaryFile(suffix=".db") as f:
         db = Database(f"sqlite:///{f.name}")
         assert db.ensure_schema is True
-        mode = list(db.query("PRAGMA journal_mode").next().values())[0]
+        mode = list(next(db.query("PRAGMA journal_mode")).values())[0]
         assert mode.lower() == "wal"
         db.close()
 
@@ -396,7 +396,7 @@ def test_constructor_kwargs_forwarded(db):
 
 def test_text_primary_type_rejected(db):
     with pytest.raises(
-        AssertionError,
+        SchemaError,
         match=r"^Text-based primary_type support is dropped, use db\.types\.$",
     ):
         db.create_table("bad_primary_type", primary_type="str")
@@ -413,13 +413,13 @@ def test_connect_forwards_kwargs():
     db.close()
 
     db = connect(row_type=dict)
-    row = db.query("SELECT 1 AS a").next()
+    row = next(db.query("SELECT 1 AS a"))
     assert type(row) is dict
     db.close()
 
     with tempfile.NamedTemporaryFile(suffix=".db") as f:
         db = connect(f"sqlite:///{f.name}")
-        mode = list(db.query("PRAGMA journal_mode").next().values())[0]
+        mode = list(next(db.query("PRAGMA journal_mode")).values())[0]
         assert mode.lower() == "wal"
         db.close()
 
@@ -430,7 +430,7 @@ def test_connect_forwards_kwargs():
         db = connect(
             f"sqlite:///{f.name}", on_connect_statements=["PRAGMA cache_size=-4000"]
         )
-        cache_size = list(db.query("PRAGMA cache_size").next().values())[0]
+        cache_size = list(next(db.query("PRAGMA cache_size")).values())[0]
         assert cache_size == -4000
         db.close()
 
@@ -492,7 +492,7 @@ def test_close_atomic_with_concurrent_use(tmp_path):
     def use():
         try:
             result["conn"] = db.executable
-        except RuntimeError as e:
+        except DatasetError as e:
             result["error"] = str(e)
 
     closer = threading.Thread(target=db.close)

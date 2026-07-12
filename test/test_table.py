@@ -408,7 +408,7 @@ def test_find_no_engine_raises():
     tbl.insert({"a": 1})
     db.close()
     with pytest.raises(
-        RuntimeError, match=r"^Cannot run queries when no engine is available\.$"
+        DatasetError, match=r"^Cannot run queries when no engine is available\.$"
     ):
         list(tbl.find())
 
@@ -1738,7 +1738,7 @@ def test_ensure_column(table, name, example, expected_type):
 
 def test_key_order(db, table):
     res = db.query("SELECT temperature, place FROM weather LIMIT 1")
-    keys = list(res.next().keys())
+    keys = list(next(res).keys())
     assert keys[0] == "temperature"
     assert keys[1] == "place"
 

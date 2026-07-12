@@ -25,10 +25,12 @@ from dataset.util import (
     QUERY_STEP,
     DatasetError,
     MutableRow,
-    OutRow,
+    NoSuchColumnError,
     QueryError,
-    ResultIter,
-    SQLWriteValue,
+    Results,
+    Row,
+    SchemaError,
+    SQLValue,
     WriteRow,
     ensure_strings,
     index_name,
@@ -422,16 +424,16 @@ class Table:
                 # (key values, value dict) per row; the synthetic bind names
                 # are assigned per group so ordering is consistent.
                 groups: dict[
-                    frozenset[str], list[tuple[list[SQLWriteValue], MutableRow]]
+                    frozenset[str], list[tuple[list[SQLValue], MutableRow]]
                 ] = {}
                 for row_ in chunk:
                     normalized = {
                         self._get_column_name(col): val for col, val in row_.items()
                     }
-                    key_values: list[SQLWriteValue] = []
+                    key_values: list[SQLValue] = []
                     for key in keys:
                         if key not in normalized:
-                            raise DatasetError(f"Row is missing key column: {key!r}")
+                            raise SchemaError(f"Row is missing key column: {key!r}")
                         key_values.append(normalized.pop(key))
                     value_dict = {
                         col: val
@@ -446,7 +448,7 @@ class Table:
                     # Sub-batch the existence check (SQLite caps the
                     # expression tree at 1000) and union the matched key
                     # tuples so duplicate keys are counted once, not summed.
-                    matched: set[tuple[SQLWriteValue, ...]] = set()
+                    matched: set[tuple[SQLValue, ...]] = set()
                     step = self._EXISTS_CHECK_BATCH
                     for start in range(0, len(group_rows), step):
                         sub = group_rows[start : start + step]
@@ -651,7 +653,7 @@ class Table:
                 chunk = []
         return processed
 
-    def delete(self, *clauses: ColumnElement[bool], **filters: SQLWriteValue) -> int:
+    def delete(self, *clauses: ColumnElement[bool], **filters: SQLValue) -> int:
         """Delete rows from the table.
 
         Keyword arguments can be used to add column-based filters. The filter
@@ -825,7 +827,7 @@ class Table:
         return ensure
 
     def _generate_clause(
-        self, column: str, op: str, value: SQLWriteValue
+        self, column: str, op: str, value: SQLValue
     ) -> ColumnElement[bool]:
         col = self.table.c[column]
         match op:
@@ -924,7 +926,7 @@ class Table:
         # only the write path routes through here.
         for k in keys:
             if not self.has_column(k):
-                raise DatasetError(f"No such column: {k}")
+                raise NoSuchColumnError(f"No such column: {k}")
         row_ = dict(row)
         args = {k: row_.pop(k, None) for k in keys}
         return args, row_
@@ -955,7 +957,7 @@ class Table:
             return
         self._sync_table((Column(name, type, **kwargs),))  # type: ignore[arg-type]
 
-    def create_column_by_example(self, name: str, value: SQLWriteValue) -> None:
+    def create_column_by_example(self, name: str, value: SQLValue) -> None:
         """
         Explicitly create a new column ``name`` with a type that is appropriate
         to store the given example ``value``.  The type is guessed in the same
@@ -1080,7 +1082,7 @@ class Table:
 
             for column in columns:
                 if not self.has_column(column):
-                    raise DatasetError(f"No such column: {column}")
+                    raise NoSuchColumnError(f"No such column: {column}")
 
             covered = (
                 self._has_unique_index(columns) if unique else self.has_index(columns)
@@ -1133,8 +1135,8 @@ class Table:
         order_by: str | Sequence[str] | None = None,
         _streamed: bool = False,
         _step: int | None = QUERY_STEP,
-        **kwargs: SQLWriteValue,
-    ) -> ResultIter:
+        **kwargs: SQLValue,
+    ) -> Results:
         """Perform a simple search on the table.
 
         Simply pass keyword arguments as ``filter``.
@@ -1169,9 +1171,9 @@ class Table:
         to run raw SQL queries instead.
         """
         if not self.exists:
-            return ResultIter(None, row_type=self.db.row_type)
+            return Results(None, row_type=self.db.row_type)
         if self.db.engine is None:
-            raise RuntimeError("Cannot run queries when no engine is available.")
+            raise DatasetError("Cannot run queries when no engine is available.")
 
         if _step is False or _step == 0:
             _step = None
@@ -1188,16 +1190,14 @@ class Table:
             stream_conn = self.db.engine.connect()
             conn = stream_conn.execution_options(stream_results=True)
 
-        return ResultIter(
+        return Results(
             conn.execute(query),
             row_type=self.db.row_type,
             step=_step,
             connection=stream_conn,
         )
 
-    def find_one(
-        self, *args: ColumnElement[bool], **kwargs: SQLWriteValue
-    ) -> OutRow | None:
+    def find_one(self, *args: ColumnElement[bool], **kwargs: SQLValue) -> Row | None:
         """Get a single result from the table.
 
         Works just like :py:meth:`find() <dataset.Table.find>` but returns one
@@ -1217,7 +1217,7 @@ class Table:
             resiter.close()
         return None
 
-    def count(self, *_clauses: ColumnElement[bool], **kwargs: SQLWriteValue) -> int:
+    def count(self, *_clauses: ColumnElement[bool], **kwargs: SQLValue) -> int:
         """Return the count of results for the given filter set."""
         # NOTE: this does not have support for limit and offset since I can't
         # see how this is useful. Still, there might be compatibility issues
@@ -1243,8 +1243,8 @@ class Table:
         *args: str | ColumnElement[bool],
         _limit: int | None = None,
         _offset: int | None = 0,
-        **kwargs: SQLWriteValue,
-    ) -> ResultIter:
+        **kwargs: SQLValue,
+    ) -> Results:
         """Return all the unique (distinct) values for the given ``columns``.
         ::
 
@@ -1256,7 +1256,7 @@ class Table:
             table.distinct('year', country='China')
         """
         if not self.exists:
-            return ResultIter(None, row_type=self.db.row_type)
+            return Results(None, row_type=self.db.row_type)
 
         columns = []
         clauses = []
@@ -1269,7 +1269,7 @@ class Table:
                 # case/space-mismatched name passes has_column then KeyErrors.
                 column = self._get_column_name(column)
                 if not self.has_column(column):
-                    raise DatasetError(f"No such column: {column}")
+                    raise NoSuchColumnError(f"No such column: {column}")
                 columns.append(self.table.c[column])
 
         clause = self._args_to_clause(kwargs, clauses=clauses)
@@ -1289,7 +1289,7 @@ class Table:
     # Legacy methods for running find queries.
     all = find
 
-    def __iter__(self) -> ResultIter:
+    def __iter__(self) -> Results:
         """Return all rows of the table as simple dictionaries.
 
         Allows for iterating over all rows in the table without explicitly
