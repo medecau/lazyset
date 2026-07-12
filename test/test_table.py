@@ -1889,6 +1889,29 @@ def test_create_index_unique(db):
     assert len(tbl.db.inspect.get_indexes("create_index_unique")) == 2
 
 
+def test_create_index_merges_mysql_length(db, monkeypatch):
+    # The auto-computed 10-char prefix for text/binary columns must be merged
+    # with a caller-supplied mysql_length, not clobbered by it. SQLite ignores
+    # mysql_length at DDL time, so observe the kwargs handed to Index instead.
+    import dataset.table as table_mod
+
+    tbl = db["idx_mysql_length"]
+    tbl.create_column("a", db.types.text)
+    tbl.create_column("b", db.types.text)
+
+    captured = {}
+    orig_index = table_mod.Index
+
+    def spy_index(name, *cols, **kw):
+        captured.update(kw)
+        return orig_index(name, *cols, **kw)
+
+    monkeypatch.setattr(table_mod, "Index", spy_index)
+    tbl.create_index(["a", "b"], mysql_length={"a": 5})
+    # Caller's length for 'a' wins; 'b' keeps the auto-computed 10-char prefix.
+    assert captured["mysql_length"] == {"a": 5, "b": 10}
+
+
 def test_create_index_missing_column_raises(table):
     with pytest.raises(DatasetError, match=r"^No such column: nonexistent_col$"):
         table.create_index(["nonexistent_col"])

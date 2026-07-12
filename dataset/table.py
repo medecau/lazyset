@@ -1147,6 +1147,15 @@ class Table:
         ::
 
             table.create_index(['name', 'country'])
+
+        This is also how :py:meth:`upsert() <dataset.Table.upsert>` and
+        :py:meth:`insert_ignore() <dataset.Table.insert_ignore>` obtain their
+        conflict arbiter: under ``auto_create`` they call
+        ``create_index(keys, unique=True)`` once. The call is a no-op when a
+        matching unique index (or primary key) on exactly ``keys`` already
+        exists, so it is safe to repeat. A caller-supplied ``mysql_length``
+        dict is merged with the auto-computed text/binary prefix lengths
+        rather than replacing them.
         """
         # Dedup like has_index (dict.fromkeys, order-preserving): a repeated
         # column would otherwise emit ON t (a, a) — rejected by MySQL
@@ -1176,12 +1185,20 @@ class Table:
                 # apparently. This defines (a somewhat random) prefix that
                 # will be captured by the index, after which I assume the engine
                 # conducts a more linear scan:
-                mysql_length = {
+                auto_length = {
                     col.name: 10
                     for col in columns_
                     if isinstance(col.type, MYSQL_LENGTH_TYPES)
                 }
-                kw["mysql_length"] = mysql_length
+                # Merge, don't clobber: a caller-supplied mysql_length wins per
+                # column, while the auto-computed 10-char prefix fills in for
+                # any text/binary column the caller didn't mention. Other
+                # backends ignore the mysql_length kwarg entirely.
+                caller_length = kw.get("mysql_length")
+                if isinstance(caller_length, dict):
+                    kw["mysql_length"] = {**auto_length, **caller_length}
+                else:
+                    kw["mysql_length"] = auto_length
                 if unique:
                     kw["unique"] = True
 
