@@ -1,4 +1,3 @@
-import itertools
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
 
@@ -100,9 +99,11 @@ class ChunkedUpdate(_Chunker):
         super()._queue_add(item)
 
     def flush(self) -> None:
+        # No pre-grouping here: update_many groups the queue internally by
+        # value-column set, so one call over a heterogeneous queue yields the
+        # same net writes (mirrors ChunkedInsert.flush delegating to
+        # insert_many).
         if self.callback is not None:
             self.callback(self.queue)
-        self.queue.sort(key=dict.keys)
-        for _fields, items in itertools.groupby(self.queue, key=dict.keys):
-            self.table.update_many(list(items), self.keys)
+        self.table.update_many(self.queue, self.keys)
         super().flush()

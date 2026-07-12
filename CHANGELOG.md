@@ -113,6 +113,10 @@ changes must be reconstructed from revision history.*
     `server_default`; rows may be reordered within a chunk (grouped by column set);
     `pad_chunk_columns` was removed from `dataset.util` and `ChunkedInsert` no longer has a
     `fields` attribute *(behavior change)*
+  - **`ChunkedUpdate`**: `flush()` now issues a single `update_many` per flush and lets it group
+    the queue internally, instead of pre-grouping with `sort`/`groupby` first (which relied on the
+    partial-order `dict_keys.__lt__` and could scatter a keyset across non-adjacent groups). Fewer
+    commits, identical net writes; no public API change (internal)
   - **`distinct()`/`create_index()`**: `distinct()` with no column names and `create_index()` on a
     column that doesn't exist now raise `DatasetError` instead of silently returning nothing /
     creating nothing *(behavior change)*
