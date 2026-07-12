@@ -23,6 +23,10 @@ Lightweight Python library for reading/writing databases as easily as JSON — a
 - **Auto-commit:** call `db._auto_commit()` after any write made outside an explicit transaction.
 - **Thread safety:** hold `self.db.lock` for schema ops; connections are thread-local; transaction depth lives in `self.local.tx`.
 - **Don't mutate input rows:** copy to `dict()` before modifying (see `update_many`, `_queue_add`).
+- **Delegate to SQLAlchemy and the database.** Prefer built-in SQLAlchemy behavior and database-enforced semantics over re-implementing them in Python:
+  - Let SQLAlchemy bind and render values (bind parameters, type coercion, identifier quoting, dialect literal rendering) — never hand-roll SQL-value serialization.
+  - Let the database decide row existence, equality, collation, NULL semantics, server-side defaults, and identifier limits — don't classify/compare in Python where SQL semantics (NULL, type affinity, case-insensitive collation) would differ.
+  - A "performance" rewrite that moves such a decision into Python must clear correctness-vs-the-DB as its acceptance bar. Reintroducing a hand-rolled version of what the stack already does correctly is a bug, not an optimization.
 - **Version:** bump with `bump2version`, never edit `dataset/__init__.py` directly.
 
 ## Conventions
@@ -36,4 +40,4 @@ Lightweight Python library for reading/writing databases as easily as JSON — a
 
 ## Docs & scope
 API + guides: https://dataset.readthedocs.io/ · source in `docs/` (Sphinx/RST, `cd docs && make html`) · changelog in `CHANGELOG.md`. Release: `bump2version` → update `CHANGELOG.md` → `make dists` → push a signed tag `vX.Y.Z` (tag push auto-publishes to PyPI via GitHub Actions).
-Out of scope: FK/relations, Python-side JOINs, async, DB-native UPSERT (implemented via SELECT + INSERT/UPDATE).
+Out of scope: FK/relations, Python-side JOINs, async. DB-native UPSERT is in scope for `upsert_many` (`ON CONFLICT`/`ON DUPLICATE KEY` with a unique arbiter index); the singular `upsert()` still uses UPDATE-rowcount-then-INSERT.
