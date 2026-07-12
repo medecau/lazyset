@@ -11,7 +11,7 @@ from sqlalchemy.engine.reflection import Inspector
 from sqlalchemy.exc import ArgumentError, SQLAlchemyError
 from sqlalchemy.schema import Column
 from sqlalchemy.schema import Table as SQLATable
-from sqlalchemy.sql.dml import Delete
+from sqlalchemy.sql.dml import Delete, Update
 from sqlalchemy.types import BIGINT, TEXT, Unicode
 
 from dataset import DatasetError, QueryError, chunked, connect
@@ -961,6 +961,43 @@ def test_update_many_returns_count_across_column_groups(db):
     tbl.insert_many([{"id": 1, "x": "x1", "y": "y1"}, {"id": 2, "x": "x2", "y": "y2"}])
     result = tbl.update_many([{"id": 1, "x": "x1-new"}, {"id": 2, "y": "y2-new"}], "id")
     assert result == 2
+
+
+def test_update_many_returns_count_without_sane_multi_rowcount(db):
+    # This fallback is LIVE on psycopg2 (supports_sane_multi_rowcount is
+    # False there), not dialect-dead: every PostgreSQL update_many takes it.
+    # Force it on SQLite by faking the UPDATE's result, mirroring
+    # test_delete_returns_count_without_sane_rowcount; the count becomes
+    # "distinct matched key tuples", so the repeated id=1 counts once.
+    tbl = db["update_many_no_sane_multi"]
+    tbl.insert_many([{"id": 1, "n": 1}, {"id": 2, "n": 2}, {"id": 3, "n": 3}])
+
+    conn = db.executable
+    original_execute = conn.execute
+
+    class _NoSaneResult:
+        rowcount = -1
+
+        def supports_sane_multi_rowcount(self):
+            return False
+
+    def spy(statement, *args, **kwargs):
+        rp = original_execute(statement, *args, **kwargs)
+        return _NoSaneResult() if isinstance(statement, Update) else rp
+
+    conn.execute = spy
+    try:
+        result = tbl.update_many(
+            [{"id": 1, "n": 10}, {"id": 1, "n": 11}, {"id": 2, "n": 20}], "id"
+        )
+    finally:
+        del conn.execute
+
+    assert result == 2, result
+    # The updates themselves went through the real execute.
+    assert tbl.find_one(id=1)["n"] == 11
+    assert tbl.find_one(id=2)["n"] == 20
+    assert tbl.find_one(id=3)["n"] == 3
 
 
 def test_update_many_chunk_size_flush_count(db):

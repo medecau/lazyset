@@ -348,7 +348,10 @@ class Table:
         See :py:meth:`update() <dataset.Table.update>` for details on
         the other parameters.
 
-        Returns the number of rows matched.
+        Returns the number of rows matched. On drivers that report no
+        reliable executemany rowcount (notably psycopg2 on PostgreSQL) this
+        is the number of *distinct key tuples* that matched, which is lower
+        than the summed per-statement count when input rows repeat a key.
         """
         keys = ensure_strings(keys)
 
@@ -483,8 +486,9 @@ class Table:
                     if rp.supports_sane_multi_rowcount():
                         updated += rp.rowcount
                     else:
-                        # Dialect-dead on SQLite/PG/MySQL. Sub-batch via
-                        # count_matched so duplicate keys are counted once.
+                        # Live on psycopg2 (PostgreSQL), which reports no
+                        # reliable executemany rowcount: count the distinct
+                        # matched key tuples instead (see docstring).
                         updated += count_matched(group_rows)
                 self.db._auto_commit()
                 chunk = []
