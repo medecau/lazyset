@@ -415,8 +415,50 @@ class Table:
                         (key_values, value_dict)
                     )
 
+                def count_matched(group_rows: list[MutableRow]) -> int:
+                    # Sub-batch the existence check (SQLite caps the
+                    # expression tree at 1000) and union the matched key
+                    # tuples so duplicate keys are counted once, not summed.
+                    matched: set[tuple[SQLWriteValue, ...]] = set()
+                    step = self._EXISTS_CHECK_BATCH
+                    for start in range(0, len(group_rows), step):
+                        sub = group_rows[start : start + step]
+                        clause = or_(
+                            *(
+                                and_(
+                                    *(
+                                        self.table.c[key] == gr[f"{key_prefix}{i}"]
+                                        for i, key in enumerate(keys)
+                                    )
+                                )
+                                for gr in sub
+                            )
+                        )
+                        rp2 = self.db.executable.execute(
+                            select(*(self.table.c[k] for k in keys)).where(clause)
+                        )
+                        matched.update(tuple(r) for r in rp2)
+                    return len(matched)
+
                 for value_cols, group_items in groups.items():
                     cols_list = sorted(value_cols)
+                    group_rows: list[MutableRow] = []
+                    for key_values, value_dict in group_items:
+                        group_row: MutableRow = {
+                            f"{key_prefix}{i}": v for i, v in enumerate(key_values)
+                        }
+                        for j, col in enumerate(cols_list):
+                            group_row[f"{val_prefix}{j}"] = value_dict[col]
+                        group_rows.append(group_row)
+
+                    if not cols_list:
+                        # A row carrying only key columns has nothing to SET;
+                        # mirror update()'s `if not len(row)` case and count
+                        # the matched keys instead of compiling an empty
+                        # (invalid) UPDATE.
+                        updated += count_matched(group_rows)
+                        continue
+
                     stmt = (
                         self.table.update()
                         .where(where)
@@ -427,43 +469,13 @@ class Table:
                             }
                         )
                     )
-                    group_rows: list[MutableRow] = []
-                    for key_values, value_dict in group_items:
-                        group_row: MutableRow = {
-                            f"{key_prefix}{i}": v for i, v in enumerate(key_values)
-                        }
-                        for j, col in enumerate(cols_list):
-                            group_row[f"{val_prefix}{j}"] = value_dict[col]
-                        group_rows.append(group_row)
-
                     rp = self.db.executable.execute(stmt, group_rows)
                     if rp.supports_sane_multi_rowcount():
                         updated += rp.rowcount
                     else:
-                        # Dialect-dead on SQLite/PG/MySQL. Sub-batch the
-                        # existence check (SQLite caps the expression tree at
-                        # 1000) and union the matched key tuples so duplicate
-                        # keys are counted once, not summed.
-                        matched: set[tuple[SQLWriteValue, ...]] = set()
-                        step = self._EXISTS_CHECK_BATCH
-                        for start in range(0, len(group_rows), step):
-                            sub = group_rows[start : start + step]
-                            clause = or_(
-                                *(
-                                    and_(
-                                        *(
-                                            self.table.c[key] == gr[f"{key_prefix}{i}"]
-                                            for i, key in enumerate(keys)
-                                        )
-                                    )
-                                    for gr in sub
-                                )
-                            )
-                            rp2 = self.db.executable.execute(
-                                select(*(self.table.c[k] for k in keys)).where(clause)
-                            )
-                            matched.update(tuple(r) for r in rp2)
-                        updated += len(matched)
+                        # Dialect-dead on SQLite/PG/MySQL. Sub-batch via
+                        # count_matched so duplicate keys are counted once.
+                        updated += count_matched(group_rows)
                 self.db._auto_commit()
                 chunk = []
         return updated

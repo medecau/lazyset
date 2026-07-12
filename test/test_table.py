@@ -911,6 +911,20 @@ def test_update_many_case_insensitive_key(db):
     assert tbl.find_one(id=2)["n"] == 2
 
 
+def test_update_many_key_only_rows(db):
+    # A row carrying only key columns has nothing to SET; mirroring
+    # update()'s `if not len(row)` case it must count the matched keys
+    # instead of compiling an invalid empty UPDATE.
+    tbl = db["update_many_key_only"]
+    tbl.insert_many([{"id": 1, "v": "a"}, {"id": 2, "v": "b"}])
+    result = tbl.update_many([{"id": 1}, {"id": 2, "v": "B"}], "id")
+    assert result == 2
+    assert tbl.find_one(id=1)["v"] == "a"
+    assert tbl.find_one(id=2)["v"] == "B"
+    # A key-only row matching nothing counts zero.
+    assert tbl.update_many([{"id": 99}], "id") == 0
+
+
 def test_update_many_chunk_size_flush(db):
     tbl = db["update_many_chunk_flush"]
     tbl.insert_many([{"id": 1, "n": 1}, {"id": 2, "n": 2}])
