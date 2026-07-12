@@ -490,14 +490,48 @@ def test_find_operator_invalid_value(table, filt, expected_message):
 
 
 def test_find_large_in_list(table):
-    # A large IN list emits one bind param per element, blowing SQLite's
-    # SQLITE_LIMIT_VARIABLE_NUMBER ("too many SQL variables"); the values
-    # must be rendered inline instead.
-    ids = list(range(40000))
+    # IN lists use SQLAlchemy's expanding bind parameters (one variable per
+    # element). This size is comfortably below every backend's variable
+    # limit (~32k on modern SQLite, 65535 on PostgreSQL/MySQL); lists beyond
+    # that limit raise the backend's own error — callers chunk.
+    ids = list(range(5000))
     rows = list(table.find(id=ids))
     assert len(rows) == len(TEST_DATA), len(rows)
-    # notin over a large list must inline too.
     assert list(table.find(id={"notin": ids})) == []
+
+
+def test_find_in_list_bytes(db):
+    # Bytes in an IN list must round-trip through bind parameters. The old
+    # literal_execute rendering had no literal processor for LargeBinary on
+    # SQLite (and rendered a *wrong* literal on other backends), so this
+    # crashed or matched nothing.
+    tbl = db["find_in_bytes"]
+    tbl.insert({"h": b"abc"})
+    tbl.insert({"h": b"\xff\x01"})
+    tbl.insert({"h": b"other"})
+    rows = list(tbl.find(h=[b"abc", b"\xff\x01"]))
+    assert len(rows) == 2, rows
+    assert {bytes(r["h"]) for r in rows} == {b"abc", b"\xff\x01"}
+
+
+@pytest.mark.parametrize(
+    "value,other",
+    [
+        (datetime(2011, 1, 1), datetime(2012, 2, 2)),
+        (1.5, 2.5),
+        (True, False),
+        ("O'Hara; -- quote", "plain"),
+    ],
+)
+def test_find_in_list_types(db, value, other):
+    # Every SQL value type must filter correctly through an IN list: binding
+    # (not literal rendering) delegates coercion to the dialect's type system.
+    tbl = db[f"find_in_types_{type(value).__name__.lower()}"]
+    tbl.insert({"v": value, "tag": "hit"})
+    tbl.insert({"v": other, "tag": "miss"})
+    rows = list(tbl.find(v=[value]))
+    assert len(rows) == 1, rows
+    assert rows[0]["tag"] == "hit"
 
 
 def test_find_unknown_operator_raises(table):

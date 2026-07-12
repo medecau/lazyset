@@ -61,6 +61,11 @@ changes must be reconstructed from revision history.*
     - **`normalize_column_key`**: no longer collapses internal spaces (kept only the deliberate
       case/whitespace folding, `upper().strip()`). Columns like `"full name"` and `"fullname"`
       are now distinct instead of silently conflated on a reflected schema. *(behavior change)*
+  - **`in`/`notin` filters**: Values are passed as ordinary (expanding) bind parameters again,
+    delegating rendering and type coercion to SQLAlchemy — an earlier inline-literal rewrite
+    (`literal_execute`) crashed on `bytes` and could mis-render other types. Lists larger than the
+    backend's bind-variable limit (~32k on modern SQLite, 65535 on PostgreSQL/MySQL) now raise the
+    backend's own error; chunk huge IN-lists in the caller. *(behavior change)*
   - **Build system**: Migrated from setuptools to modern pyproject.toml with Hatchling (PEP 621)
   - **Linting**: Replaced flake8 with ruff for faster, more comprehensive linting
   - **CI/CD**: Updated GitHub Actions to use modern action versions (checkout@v4, setup-python@v5)

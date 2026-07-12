@@ -796,16 +796,13 @@ class Table:
             case "in":
                 if not isinstance(value, (list, tuple, set)):
                     raise QueryError(f"'in' filter requires a list, got {type(value)}")
-                # Render the list inline (literal_execute) rather than one bind
-                # param per element, which blows SQLite's SQLITE_LIMIT_VARIABLE_
-                # NUMBER (and the 65535 cap on PostgreSQL/MySQL) for large lists.
-                return col.in_(bindparam(None, list(value), literal_execute=True))
+                return col.in_(list(value))
             case "notin":
                 if not isinstance(value, (list, tuple, set)):
                     raise QueryError(
                         f"'notin' filter requires a list, got {type(value)}"
                     )
-                return col.notin_(bindparam(None, list(value), literal_execute=True))
+                return col.notin_(list(value))
             case "between" | "..":
                 if not isinstance(value, (list, tuple)) or len(value) != 2:
                     raise QueryError("'between' filter requires a list of two values")
