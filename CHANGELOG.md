@@ -103,6 +103,21 @@ changes must be reconstructed from revision history.*
   - **Metadata**: Changed development status from Alpha to Production/Stable
   - **License**: Renamed LICENSE.txt to LICENSE for standard convention
   - **Dependencies**: Updated SQLAlchemy constraint to allow versions up to 3.0.0
+  - **Filter operators**: An unrecognized operator (e.g. a typo like `{'contains': …}`) now raises
+    `QueryError` instead of silently returning an empty result *(behavior change)*
+  - **`has_index`**: Now matches an ordered leftmost prefix of an existing index (or the primary
+    key), not any column subset — `upsert`/`insert_ignore` may create one extra index on first use
+    against tables whose index only covered the old, looser match *(behavior change)*
+  - **`insert_many`/`ChunkedInsert`**: A column omitted from a given row now takes the database's
+    server-side default (or NULL) instead of an explicitly bound NULL that overrode
+    `server_default`; rows may be reordered within a chunk (grouped by column set);
+    `pad_chunk_columns` was removed from `dataset.util` and `ChunkedInsert` no longer has a
+    `fields` attribute *(behavior change)*
+  - **`distinct()`/`create_index()`**: `distinct()` with no column names and `create_index()` on a
+    column that doesn't exist now raise `DatasetError` instead of silently returning nothing /
+    creating nothing *(behavior change)*
+  - **`make_sqlite_url`**: The URI form now percent-encodes the database path, so `?`/`#`/`%` in a
+    filename can't mangle the query string *(behavior change)*
 * 1.6.2: Fix distinct() to respect _limit and _offset parameters (#424).
 * 1.6.1: Fix add_column method compatibility with Alembic 1.11+ (#423).
 * 1.6.0: Pin SQLAlchemy below 2.0.0 for compatibility.

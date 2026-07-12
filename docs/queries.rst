@@ -42,6 +42,9 @@ startswith     String starts with
 endswith       String ends with
 ============== ============================================================
 
+An unrecognized operator name raises ``dataset.util.QueryError`` rather
+than silently matching nothing.
+
 Querying for a specific value on a column that does not exist on the table
 will return no results.
 
