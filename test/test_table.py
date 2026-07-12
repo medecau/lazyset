@@ -1429,6 +1429,39 @@ def test_table_property_returns_table_not_none(db):
     assert result is real
 
 
+def test_column_keys_cached_read_takes_no_lock(db):
+    # _column_keys is read once per cell in the bulk write loops, so a warm
+    # (already-built) read must not re-acquire db.lock. The map is built once
+    # under the lock and published whole; a cached read returns a snapshot
+    # lock-free, like the `table` property's concurrency snapshot.
+    tbl = db["col_keys_lock"]
+    tbl.insert({"id": 1, "name": "a"})
+    _ = tbl._column_keys  # warm the cache
+    assert tbl._columns is not None
+
+    class CountingLock:
+        def __init__(self, inner):
+            self._inner = inner
+            self.enters = 0
+
+        def __enter__(self):
+            self.enters += 1
+            return self._inner.__enter__()
+
+        def __exit__(self, *exc):
+            return self._inner.__exit__(*exc)
+
+    counter = CountingLock(db.lock)
+    db.lock = counter
+    try:
+        for _ in range(5):
+            _ = tbl._column_keys
+    finally:
+        db.lock = counter._inner
+
+    assert counter.enters == 0, counter.enters
+
+
 def test_sync_table_add_existing_column_is_idempotent(table):
     before = set(table.columns)
     table._sync_table((Column("place", Unicode),))

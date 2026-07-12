@@ -122,6 +122,12 @@ changes must be reconstructed from revision history.*
     the queue internally, instead of pre-grouping with `sort`/`groupby` first (which relied on the
     partial-order `dict_keys.__lt__` and could scatter a keyset across non-adjacent groups). Fewer
     commits, identical net writes; no public API change (internal)
+  - **`Table._column_keys`**: the case-map cache is now read lock-free on the warm path — built once
+    under `db.lock` and published as one whole dict, then returned without the lock on subsequent
+    reads (double-checked, with the build published atomically so a concurrent lock-free reader
+    never sees a partial map). Previously every access took `db.lock`, so the bulk write loops
+    (`insert_many`/`update_many`/`upsert_many`, which resolve the column name once per cell) paid an
+    uncontended lock acquire per cell. Behaviour unchanged; internal (no public API)
   - **`distinct()`/`create_index()`**: `distinct()` with no column names and `create_index()` on a
     column that doesn't exist now raise `DatasetError` instead of silently returning nothing /
     creating nothing *(behavior change)*

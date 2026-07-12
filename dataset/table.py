@@ -113,22 +113,36 @@ class Table:
         """Get a dictionary of all columns and their case mapping."""
         if not self.exists:
             return {}
+        # Fast path: the map is built once and published whole (never mutated
+        # in place), so once it is non-None a lock-free read is safe — this is
+        # read once per cell in the bulk write loops. _reflect_table resets it
+        # to None under the lock to invalidate. Snapshot into a local so a
+        # concurrent reset can't turn our return value into None mid-read
+        # (mirrors the `table` property's snapshot).
+        columns = self._columns
+        if columns is not None:
+            return columns
         with self.db.lock:
+            # Re-check under the lock: another thread may have built it while
+            # we waited.
             if self._columns is None:
                 # Initialise the table if it doesn't exist
                 table = self.table
-                self._columns = {}
+                built: dict[str, str] = {}
                 for column in table.columns:
                     name = normalize_column_name(
                         column.name, max_bytes=self.db._max_ident_bytes
                     )
                     key = normalize_column_key(name)
-                    if key in self._columns:
+                    if key in built:
                         log.warning("Duplicate column: %s", name)
                     if key is None:
                         log.warning("Invalid column name: %s", name)
                         continue
-                    self._columns[key] = name
+                    built[key] = name
+                # Publish the fully-built map in one atomic assignment so a
+                # lock-free reader never observes a partially-filled dict.
+                self._columns = built
             return self._columns
 
     @property
