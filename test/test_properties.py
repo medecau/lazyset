@@ -356,6 +356,17 @@ def test_index_name_exact_value():
     assert index_name("t", ["a", "b"]) == "ix_t_95253b90414f24c6"
 
 
+def test_index_name_prefix():
+    # The uq_ prefix (unique arbiter indexes) must never collide with the
+    # ix_ name for the same table/columns, while sharing the identity hash.
+    ix = index_name("t", ["a"])
+    uq = index_name("t", ["a"], prefix="uq")
+    assert ix.startswith("ix_t_")
+    assert uq.startswith("uq_t_")
+    assert ix[-16:] == uq[-16:]
+    assert ix != uq
+
+
 def test_index_name_byte_capped():
     # A long table name would overflow PostgreSQL's 63-byte identifier limit;
     # the name must be capped while keeping the 16-char hash suffix, so

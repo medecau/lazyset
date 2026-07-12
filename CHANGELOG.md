@@ -61,6 +61,25 @@ changes must be reconstructed from revision history.*
     - **`normalize_column_key`**: no longer collapses internal spaces (kept only the deliberate
       case/whitespace folding, `upper().strip()`). Columns like `"full name"` and `"fullname"`
       are now distinct instead of silently conflated on a reflected schema. *(behavior change)*
+  - **`upsert_many`**: Now uses the database's native UPSERT (`INSERT … ON CONFLICT DO UPDATE` on
+    SQLite/PostgreSQL, `ON DUPLICATE KEY UPDATE` on MySQL) with a UNIQUE arbiter index on `keys`,
+    instead of a Python SELECT-then-classify pass. Row identity is decided by SQL equality — this
+    fixes `'5'` vs `5` creating duplicate rows, `None`-valued keys silently vanishing, and the
+    classify-then-write race window. Behavior changes: *(behavior change)*
+    - `ensure=False` now requires a pre-existing unique index or primary key on exactly `keys`
+      (the arbiter); without one the database raises its own error. The old path needed no index.
+    - The `ensure` side effect now creates a **UNIQUE** index (named `uq_…`, distinct from the
+      `ix_…` name the singular `upsert()` creates). If the table already contains rows with
+      duplicate values for `keys`, this raises a clear `DatasetError`.
+    - `None`-valued keys always INSERT (NULLs are distinct in a unique index), unlike the
+      singular `upsert()`'s IS NULL matching.
+    - The return value now counts input rows processed; within-call repeated keys are no longer
+      collapsed before counting, and the updated-vs-inserted split is not reported.
+    - Backend-decided caveats: on MySQL the upsert fires on *any* unique key (not just `keys`) and
+      the default collation merges `'A'`/`'a'`; on PostgreSQL a key repeated within one chunk
+      raises ("cannot affect row a second time") — dedupe first or lower `chunk_size`.
+  - **`create_index`**: New optional `unique=` flag (gated on an exact-column unique index/PK, not
+    `has_index`'s prefix match); `dataset.util.index_name` gains a `prefix=` parameter.
   - **`in`/`notin` filters**: Values are passed as ordinary (expanding) bind parameters again,
     delegating rendering and type coercion to SQLAlchemy — an earlier inline-literal rewrite
     (`literal_execute`) crashed on `bytes` and could mis-render other types. Lists larger than the

@@ -8,7 +8,7 @@ from datetime import datetime
 import pytest
 from sqlalchemy import Float
 from sqlalchemy.engine.reflection import Inspector
-from sqlalchemy.exc import ArgumentError
+from sqlalchemy.exc import ArgumentError, SQLAlchemyError
 from sqlalchemy.schema import Column
 from sqlalchemy.sql.dml import Delete
 from sqlalchemy.types import BIGINT, TEXT, Unicode
@@ -1147,10 +1147,8 @@ def test_upsert_many_batched_is_fast(db):
 
 
 def test_upsert_many_default_chunk_size_does_not_crash_on_sqlite(db):
-    # The batch existence check builds one OR-of-AND clause per distinct
-    # key; SQLite's default expression-tree depth limit is 1000, so a
-    # batch of >=999 distinct keys at the default chunk_size=1000 must not
-    # build one giant clause, or this raises "Expression tree is too large".
+    # A full default-sized chunk (1000 rows) must go through in one native
+    # upsert executemany without tripping any backend statement limit.
     tbl = db["upsert_many_default_chunk_crash"]
     rows = [{"id": i, "value": i} for i in range(1000)]
     result = tbl.upsert_many(rows, "id")
@@ -1166,16 +1164,17 @@ def test_upsert_many_returns_count(db):
 
 
 def test_upsert_many_returns_count_duplicate_split_across_chunk(db):
-    # chunk_size=2 puts the duplicate id=1 pair in the first batch and the
-    # new id=2 row in a second batch; the duplicate must still collapse to
-    # one write, not be double-counted.
+    # The return value counts input rows processed (the DB resolves how many
+    # became inserts vs updates); a repeated key still collapses to one
+    # stored row, with the last occurrence's values winning.
     tbl = db["upsert_many_count_duplicate_chunk"]
     result = tbl.upsert_many(
         [{"id": 1, "value": "a"}, {"id": 1, "value": "b"}, {"id": 2, "value": "c"}],
         "id",
         chunk_size=2,
     )
-    assert result == 2
+    assert result == 3
+    assert len(tbl) == 2
     assert tbl.find_one(id=1)["value"] == "b"
 
 
@@ -1204,11 +1203,82 @@ def test_upsert_many_creates_index(db):
     assert tbl.has_index(["a"]) is True
 
 
-def test_upsert_many_ensure_false_skips_index_creation(db):
+def test_upsert_many_ensure_false_uses_existing_unique_index(db):
+    # ensure=False must not create an index — the caller supplies the unique
+    # arbiter themselves, and the upsert then rides on it.
     tbl = db["upsert_many_ensure_false_index"]
+    tbl.insert({"a": 1, "v": "old"})
+    tbl.create_index(["a"], unique=True)
+    before = len(tbl.db.inspect.get_indexes(tbl.name))
+    tbl.upsert_many([{"a": 1, "v": "new"}, {"a": 2, "v": "x"}], ["a"], ensure=False)
+    assert len(tbl.db.inspect.get_indexes(tbl.name)) == before
+    assert len(tbl) == 2
+    assert tbl.find_one(a=1)["v"] == "new"
+
+
+def test_upsert_many_ensure_false_needs_unique_index(db):
+    # With ensure=False no unique arbiter index is created, and the DB-native
+    # upsert has nothing to conflict on: the backend raises its own error
+    # (the old SELECT-then-classify path silently needed no index at all).
+    tbl = db["upsert_many_ensure_false_no_index"]
     tbl.insert({"a": 1})
-    tbl.upsert_many([{"a": 2}], ["a"], ensure=False)
-    assert tbl.has_index(["a"]) is False
+    with pytest.raises(SQLAlchemyError):
+        tbl.upsert_many([{"a": 2}], ["a"], ensure=False)
+
+
+def test_upsert_many_none_key(db):
+    # A None-valued key must INSERT (NULLs are distinct in a unique index).
+    # The old Python classifier matched the existing NULL row via IS NULL,
+    # then routed it to an UPDATE whose `key = NULL` bind matched nothing —
+    # the row silently vanished from the write.
+    tbl = db["upsert_many_none_key"]
+    tbl.upsert_many([{"k": None, "v": "first"}], ["k"])
+    assert len(tbl) == 1
+    tbl.upsert_many([{"k": None, "v": "second"}], ["k"])
+    rows = list(tbl.find(order_by="id"))
+    assert len(rows) == 2, rows
+    assert {r["v"] for r in rows} == {"first", "second"}
+
+
+def test_upsert_many_coerced_key(db):
+    # Key identity is decided by SQL equality, not Python equality: SQLite
+    # coerces '5' to 5 on insert into an INTEGER-affinity column, so both
+    # writes target one row. The old classifier compared Python tuples,
+    # where ('5',) != (5,) rerouted the second write to a duplicate INSERT.
+    tbl = db["upsert_many_coerced_key"]
+    tbl.upsert_many([{"k": 5, "v": "a"}], ["k"])
+    tbl.upsert_many([{"k": "5", "v": "b"}], ["k"])
+    assert len(tbl) == 1
+    assert tbl.find_one(k=5)["v"] == "b"
+
+
+def test_upsert_many_key_only_rows(db):
+    # Rows carrying only key columns have nothing to SET: the statement must
+    # fall back to conflict-do-nothing, not emit an empty update.
+    tbl = db["upsert_many_key_only"]
+    tbl.upsert_many([{"id": 1}, {"id": 1}, {"id": 2}], ["id"])
+    assert len(tbl) == 2
+
+
+def test_upsert_many_mixed_key_only_and_valued_rows(db):
+    # Key-only rows and valued rows in the same call land in different
+    # column groups (do-nothing vs do-update statements).
+    tbl = db["upsert_many_mixed_key_only"]
+    tbl.insert({"id": 1, "v": "keep"})
+    tbl.upsert_many([{"id": 1}, {"id": 2, "v": "B"}], ["id"])
+    assert len(tbl) == 2
+    assert tbl.find_one(id=1)["v"] == "keep"
+    assert tbl.find_one(id=2)["v"] == "B"
+
+
+def test_upsert_many_duplicate_data_raises(db):
+    # Building the unique arbiter index over pre-existing duplicate key
+    # values cannot succeed; it must surface as a clear DatasetError, not a
+    # raw IntegrityError (and never be swallowed).
+    tbl = db["upsert_many_duplicate_data"]
+    tbl.insert_many([{"a": 1, "v": "x"}, {"a": 1, "v": "y"}])
+    with pytest.raises(DatasetError, match="duplicate values"):
+        tbl.upsert_many([{"a": 2, "v": "z"}], ["a"])
 
 
 def test_drop_operations(table):
@@ -1563,6 +1633,25 @@ def test_create_index_dedups_columns(db):
     indexes = tbl.db.inspect.get_indexes("create_index_dedup")
     assert len(indexes) == 1, indexes
     assert indexes[0]["column_names"] == ["a"], indexes
+
+
+def test_create_index_unique(db):
+    tbl = db["create_index_unique"]
+    tbl.insert({"a": 1})
+    # A plain (non-unique) index on the same columns must not satisfy the
+    # unique gate: has_index's prefix match would false-positive here, and
+    # the arbiter index would silently never be built.
+    tbl.create_index(["a"])
+    tbl.create_index(["a"], unique=True)
+    indexes = tbl.db.inspect.get_indexes("create_index_unique")
+    assert len(indexes) == 2, indexes
+    uq = [i for i in indexes if i["unique"]]
+    assert len(uq) == 1, indexes
+    assert uq[0]["name"].startswith("uq_")
+    assert uq[0]["column_names"] == ["a"]
+    # Idempotent: a second unique create is a no-op.
+    tbl.create_index(["a"], unique=True)
+    assert len(tbl.db.inspect.get_indexes("create_index_unique")) == 2
 
 
 def test_create_index_missing_column_raises(table):

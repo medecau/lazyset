@@ -221,15 +221,19 @@ def safe_url(url: str) -> str:
     return urlunparse(parsed._replace(netloc=f"{user}:*****@{host}"))
 
 
-def index_name(table: str, columns: list[str]) -> str:
-    """Generate an artificial index name, capped at 63 bytes."""
+def index_name(table: str, columns: list[str], prefix: str = "ix") -> str:
+    """Generate an artificial index name, capped at 63 bytes.
+
+    ``prefix`` distinguishes index families on the same table/columns:
+    plain indexes use the default ``ix``, unique arbiter indexes use ``uq``.
+    """
     # Netstring-style join so distinct column lists never collide:
     # ["a", "b||c"] and ["a||b", "c"] must hash to different names.
     sig = "".join(f"{len(c)}:{c}" for c in columns)
     key = sha1(sig.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
     # PostgreSQL caps identifiers at 63 bytes and MySQL errors past 64. Keep
     # the hash suffix intact (it carries the column identity, so distinct
-    # column sets stay distinct) and byte-trim the ix_<table> prefix,
+    # column sets stay distinct) and byte-trim the <prefix>_<table> part,
     # decoding codepoint-safely so a multi-byte char is never split.
-    prefix = f"ix_{table}".encode()[: 63 - 1 - len(key)].decode("utf-8", "ignore")
-    return f"{prefix}_{key}"
+    stem = f"{prefix}_{table}".encode()[: 63 - 1 - len(key)].decode("utf-8", "ignore")
+    return f"{stem}_{key}"

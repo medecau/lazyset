@@ -5,10 +5,14 @@ from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Any, Literal
 
 from sqlalchemy import false, func, select
-from sqlalchemy.exc import NoSuchTableError
+from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import IntegrityError, NoSuchTableError
 from sqlalchemy.schema import Column, Index
 from sqlalchemy.schema import Table as SQLATable
 from sqlalchemy.sql import and_, expression, or_
+from sqlalchemy.sql.dml import Insert
 from sqlalchemy.sql.expression import (
     ClauseElement,
     ColumnElement,
@@ -43,10 +47,10 @@ class Table:
     """Represents a table in a database and exposes common operations."""
 
     PRIMARY_DEFAULT = "id"
-    # The OR-of-AND existence check (upsert_many's classifier and
-    # update_many's non-sane-multi-rowcount fallback) builds one clause per
-    # distinct key; SQLite's default expression-tree depth limit is 1000, so
-    # it is sub-batched at this size independently of the caller's chunk_size.
+    # The OR-of-AND existence check (update_many's non-sane-multi-rowcount
+    # fallback) builds one clause per distinct key; SQLite's default
+    # expression-tree depth limit is 1000, so it is sub-batched at this size
+    # independently of the caller's chunk_size.
     _EXISTS_CHECK_BATCH = 500
 
     def __init__(
@@ -492,6 +496,38 @@ class Table:
             return self.insert(row, ensure=False)
         return True
 
+    def _upsert_stmt(
+        self, group_cols: frozenset[str], norm_keys: Sequence[str]
+    ) -> Insert:
+        """Build one dialect-native upsert statement for a column group.
+
+        The SET side references the proposed row values (``excluded`` /
+        ``inserted``), so a single statement serves every row in the group
+        under executemany. Unknown columns (possible with ``ensure=False``)
+        are left out of the SET; the extra parameter keys are ignored at
+        execute time, matching insert_many.
+        """
+        non_key = sorted(
+            c for c in group_cols if c not in norm_keys and self.has_column(c)
+        )
+        if self.db.is_mysql:
+            my_stmt = mysql_insert(self.table)
+            if non_key:
+                return my_stmt.on_duplicate_key_update(
+                    **{c: my_stmt.inserted[c] for c in non_key}
+                )
+            # Key-only rows: MySQL has no DO NOTHING, so assign a key to its
+            # own proposed value — a no-op on duplicates.
+            k0 = norm_keys[0]
+            return my_stmt.on_duplicate_key_update(**{k0: my_stmt.inserted[k0]})
+        stmt = sqlite_insert(self.table) if self.db.is_sqlite else pg_insert(self.table)
+        if non_key:
+            return stmt.on_conflict_do_update(
+                index_elements=list(norm_keys),
+                set_={c: stmt.excluded[c] for c in non_key},
+            )
+        return stmt.on_conflict_do_nothing(index_elements=list(norm_keys))
+
     def upsert_many(
         self,
         rows: Sequence[WriteRow],
@@ -500,105 +536,80 @@ class Table:
         ensure: bool | None = None,
         types: dict[str, ColumnType] | None = None,
     ) -> int:
-        """
-        Sorts multiple input rows into upserts and inserts. Inserts are passed
-        to insert and upserts are updated.
+        """Insert-or-update many rows at a time using a DB-native UPSERT.
 
-        See :py:meth:`upsert() <dataset.Table.upsert>` and
-        :py:meth:`insert_many() <dataset.Table.insert_many>`.
+        Each chunk is written with a single ``INSERT ... ON CONFLICT DO
+        UPDATE`` (SQLite/PostgreSQL) or ``ON DUPLICATE KEY UPDATE`` (MySQL)
+        per column group: the database decides row existence by SQL equality
+        on ``keys``, atomically per statement.
 
-        Returns the number of rows updated plus the number of rows inserted.
+        With ``ensure`` on (the default), a UNIQUE index on ``keys`` is
+        created as a side effect — the conflict arbiter the native upsert
+        requires. This raises :py:class:`DatasetError <dataset.DatasetError>`
+        if the table already contains rows with duplicate values for
+        ``keys``. With ``ensure=False`` a unique index or primary key on
+        exactly ``keys`` must already exist, or the database raises its own
+        error.
+
+        Notes on SQL semantics (all backend-decided): ``None``-valued keys
+        always insert (NULLs are distinct in a unique index); on MySQL the
+        upsert fires on *any* unique key of the table, and its default
+        collation treats ``'A'``/``'a'`` as duplicates; on PostgreSQL a key
+        repeated *within* one chunk raises ("cannot affect row a second
+        time") — deduplicate beforehand or lower ``chunk_size``.
+
+        See :py:meth:`insert_many() <dataset.Table.insert_many>` for details
+        on the other parameters.
+
+        Returns the number of input rows processed (the insert/update split
+        is not reported by executemany on any backend).
         """
-        # 2b1947e replaced a bulk implementation with a one-by-one loop,
-        # since doing it in bulk ran into column-creation issues. The batch
-        # below resolves that by union-syncing columns once per batch before
-        # classifying rows, mirroring insert_many's own pre-scan.
         keys = ensure_strings(keys)
 
-        updated = 0
-        inserted = 0
-        batch: list[WriteRow] = []
+        # Sync table once up front: column creation is call-wide, so union
+        # every row's keys for the _sync_columns pass (mirrors insert_many).
+        sync_row: MutableRow = {}
+        for row in rows:
+            for key in row:
+                if key not in sync_row:
+                    sync_row[key] = row[key]
+        self._sync_columns(sync_row, ensure, types=types)
+
+        # Normalize key names now that the columns exist, so a
+        # case-mismatched key (e.g. ['ID'] against an 'id' column) resolves
+        # to the real column name used by the arbiter index and statement.
+        norm_keys = [self._get_column_name(k) for k in keys]
+
+        if self._check_ensure(ensure):
+            self.create_index(norm_keys, unique=True)
+
+        # One compiled statement per column set, cached across chunks.
+        stmts: dict[frozenset[str], Insert] = {}
+        processed = 0
+        chunk: list[MutableRow] = []
         for index, row in enumerate(rows):
-            batch.append(row)
+            chunk.append({self._get_column_name(k): v for k, v in row.items()})
 
             # Upsert when chunk_size is fulfilled or this is the last row
-            if len(batch) == chunk_size or index == len(rows) - 1:
-                # Last-wins dedup by key-tuple: a single up-front exists
-                # check can't see one row's insert when classifying the next
-                # row in the same batch, so only the last occurrence per key
-                # is ever written. A row that doesn't specify every key
-                # column at all (e.g. relying on an autoincrement id) has no
-                # real key identity to dedup on, so it always goes straight
-                # to insert, same as the row-by-row loop did.
-                # Normalize keys and each row's column names so a
-                # case-mismatched key (e.g. ['ID'] against an 'id' column)
-                # classifies and matches correctly, instead of KeyError-ing on
-                # the exact-match column collection or silently rerouting the
-                # row to a duplicate INSERT. Storing the normalized rows keeps
-                # the downstream update_many/insert_many aligned to the real
-                # column names.
-                norm_keys = [self._get_column_name(k) for k in keys]
-                deduped: dict[tuple[SQLWriteValue, ...], MutableRow] = {}
-                always_insert: list[MutableRow] = []
-                for row_ in batch:
-                    norm_row = {self._get_column_name(c): v for c, v in row_.items()}
-                    if all(k in norm_row for k in norm_keys):
-                        key_tuple = tuple(norm_row[k] for k in norm_keys)
-                        deduped[key_tuple] = norm_row
-                    else:
-                        always_insert.append(norm_row)
-
-                sample: MutableRow = {}
-                for synced_row in (*deduped.values(), *always_insert):
-                    for k, v in synced_row.items():
-                        if k not in sample:
-                            sample[k] = v
-                self._sync_columns(sample, ensure, types=types)
-
-                if self._check_ensure(ensure):
-                    self.create_index(norm_keys)
-
-                # Checked in its own sub-batches, independent of the
-                # caller's chunk_size (see _EXISTS_CHECK_BATCH above).
-                existing_keys: set[tuple[SQLWriteValue, ...]] = set()
-                all_key_tuples = list(deduped.keys())
-                batch_size = self._EXISTS_CHECK_BATCH
-                for start in range(0, len(all_key_tuples), batch_size):
-                    key_tuples = all_key_tuples[start : start + batch_size]
-                    clause = or_(
-                        *(
-                            and_(
-                                *(
-                                    self.table.c[k] == v
-                                    for k, v in zip(norm_keys, key_tuple, strict=True)
-                                )
-                            )
-                            for key_tuple in key_tuples
+            if len(chunk) == chunk_size or index == len(rows) - 1:
+                # Group by the exact column set (like insert_many): an
+                # omitted column is left out of its group's INSERT and SET,
+                # so the DB applies its default on insert and leaves the
+                # column untouched on update.
+                groups: dict[frozenset[str], list[MutableRow]] = {}
+                for chunk_row in chunk:
+                    groups.setdefault(frozenset(chunk_row), []).append(chunk_row)
+                for group_cols, group_rows in groups.items():
+                    stmt = stmts.get(group_cols)
+                    if stmt is None:
+                        stmt = stmts[group_cols] = self._upsert_stmt(
+                            group_cols, norm_keys
                         )
-                    )
-                    rp = self.db.executable.execute(
-                        select(*(self.table.c[k] for k in norm_keys)).where(clause)
-                    )
-                    existing_keys.update(tuple(result_row) for result_row in rp)
-
-                to_update = [
-                    row_ for kt, row_ in deduped.items() if kt in existing_keys
-                ]
-                to_insert = always_insert + [
-                    row_ for kt, row_ in deduped.items() if kt not in existing_keys
-                ]
-
-                if to_update:
-                    updated += self.update_many(
-                        to_update, norm_keys, len(to_update), ensure=False
-                    )
-                if to_insert:
-                    inserted += self.insert_many(
-                        to_insert, len(to_insert), ensure=False
-                    )
-
-                batch = []
-        return updated + inserted
+                    self.db.executable.execute(stmt, group_rows)
+                self.db._auto_commit()
+                processed += len(chunk)
+                chunk = []
+        return processed
 
     def delete(self, *clauses: ColumnElement[bool], **filters: SQLWriteValue) -> int:
         """Delete rows from the table.
@@ -976,13 +987,38 @@ class Table:
                 return True
             return False
 
+    def _has_unique_index(self, columns: Sequence[str]) -> bool:
+        """Check for a UNIQUE index (or the primary key) on exactly ``columns``.
+
+        Deliberately not ``has_index``: that matches any ordered leftmost
+        prefix and caches non-unique indexes, either of which would
+        false-positive here — a plain ``ix_`` index on the same columns must
+        not satisfy the upsert arbiter requirement. The caller must hold
+        ``self.db.lock``.
+        """
+        if not self.exists:
+            return False
+        cols = list(columns)
+        indexes = self.db.inspect.get_indexes(self.name, schema=self.db.schema)
+        for index in indexes:
+            if index.get("unique") and index.get("column_names", []) == cols:
+                return True
+        pk_columns = [c.name for c in self.table.primary_key.columns]
+        return pk_columns == cols
+
     def create_index(
-        self, columns: Sequence[str], name: str | None = None, **kw: object
+        self,
+        columns: Sequence[str],
+        name: str | None = None,
+        unique: bool = False,
+        **kw: object,
     ) -> None:
         """Create an index to speed up queries on a table.
 
         If no ``name`` is given, a deterministic name is generated from the
-        table and column names.
+        table and column names. With ``unique``, a UNIQUE index is created
+        (under a distinct generated name), gated on an exact-column unique
+        index or primary key rather than ``has_index``'s prefix match.
         ::
 
             table.create_index(['name', 'country'])
@@ -1001,9 +1037,14 @@ class Table:
                 if not self.has_column(column):
                     raise DatasetError(f"No such column: {column}")
 
-            if not self.has_index(columns):
+            covered = (
+                self._has_unique_index(columns) if unique else self.has_index(columns)
+            )
+            if not covered:
                 self._threading_warn()
-                name = name or index_name(self.name, columns)
+                name = name or index_name(
+                    self.name, columns, prefix="uq" if unique else "ix"
+                )
                 columns_ = [self.table.c[c] for c in columns]
 
                 # MySQL crashes out if you try to index very long text fields,
@@ -1016,9 +1057,27 @@ class Table:
                     if isinstance(col.type, MYSQL_LENGTH_TYPES)
                 }
                 kw["mysql_length"] = mysql_length
+                if unique:
+                    kw["unique"] = True
 
                 idx = Index(name, *columns_, **kw)  # type: ignore[arg-type]
-                idx.create(self.db.executable)
+                if unique:
+                    # Existing duplicate key values make the arbiter index
+                    # impossible to build; surface that clearly, never swallow.
+                    try:
+                        idx.create(self.db.executable)
+                    except IntegrityError as exc:
+                        if not self.db.in_transaction:
+                            # Leave the autobegun transaction usable (on
+                            # PostgreSQL it is aborted until rolled back).
+                            self.db.executable.rollback()
+                        raise DatasetError(
+                            f"Cannot create a unique index on {columns!r}: "
+                            f"table {self.name!r} already contains rows with "
+                            "duplicate values for these columns."
+                        ) from exc
+                else:
+                    idx.create(self.db.executable)
                 self.db._auto_commit()
 
     def find(
