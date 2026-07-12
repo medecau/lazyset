@@ -19,7 +19,6 @@ from dataset import (
     NoSuchColumnError,
     QueryError,
     SchemaError,
-    chunked,
     connect,
 )
 from dataset.util import index_name
@@ -787,123 +786,32 @@ def test_insert_preserves_server_default(db):
     assert tbl.find_one(id=2)["status"] == "active"
 
 
-def test_chunked_insert(table):
+def test_insert_transform_via_generator(table):
+    # The pre-3.0 ChunkedInsert(callback=...) pre-flush hook is gone; a per-row
+    # transform now rides a generator wrapping the input. Streaming insert
+    # consumes it lazily, so the transform composes without buffering the
+    # whole input the way the old callback queue did.
     data = TEST_DATA * 100
-    with chunked.ChunkedInsert(table) as chunk_tbl:
-        for item in data:
-            chunk_tbl.insert(item)
-    assert len(table) == len(data) + len(TEST_DATA), (len(table), len(data))
+
+    def tagged(rows):
+        for row in rows:
+            yield {**row, "tag": "seen"}
+
+    assert table.insert(tagged(data), chunk_size=17) == len(data)
+    assert table.count(tag="seen") == len(data)
 
 
-def test_chunked_insert_callback(table):
-    data = TEST_DATA * 100
-    n_items = 0
-
-    def callback(queue):
-        nonlocal n_items
-        n_items += len(queue)
-
-    with chunked.ChunkedInsert(table, callback=callback) as chunk_tbl:
-        for item in data:
-            chunk_tbl.insert(item)
-    assert len(data) == n_items
-    assert len(table) == len(data) + len(TEST_DATA)
-
-
-def test_chunked_insert_invalid_callback(table):
-    # A non-callable callback is rejected at construction time.
-    with pytest.raises(chunked.InvalidCallbackError):
-        chunked.ChunkedInsert(table, callback="not callable")
-
-
-def test_chunked_flush_threshold_and_default(db):
-    assert chunked.ChunkedInsert(db["chunk_default"]).chunksize == 1000
-    assert chunked.ChunkedUpdate(db["chunk_default2"], ["id"]).chunksize == 1000
-
-    tbl = db["chunk_threshold"]
-    seen = []
-
-    def callback(queue):
-        seen.append(len(queue))
-
-    with chunked.ChunkedInsert(tbl, chunksize=2, callback=callback) as inserter:
-        inserter.insert({"a": 1})
-        inserter.insert({"a": 2})  # hits the chunksize=2 threshold, auto-flushes
-        inserter.insert({"a": 3})  # flushed on __exit__ instead
-    assert seen == [2, 1], seen
-
-
-def test_chunked_insert_preserves_values(db):
-    tbl = db["chunk_heterogeneous"]
-    with chunked.ChunkedInsert(tbl) as inserter:
-        inserter.insert({"a": 1, "b": "x"})
-        inserter.insert({"a": 2})  # missing "b", must be padded with NULL
-
-    rows = list(tbl.find(_order_by="a"))
-    assert rows[0]["a"] == 1 and rows[0]["b"] == "x"
-    assert rows[1]["a"] == 2 and rows[1]["b"] is None
-
-
-def test_chunked_insert_preserves_default_across_chunks(db):
-    # ChunkedInsert padded to a lifetime self.fields union that was never
-    # reset, so a column supplied in an earlier chunk got bound as NULL in a
-    # later chunk that omitted it — overriding the DB default across flushes.
-    tbl = db["chunked_default_across_chunks"]
+def test_insert_preserves_server_default_across_chunks(db):
+    # A column supplied in one chunk must not leak into a later chunk that
+    # omits it: at chunk_size=1 each row is its own flush, and the omitted
+    # column must fall back to its server_default, not a bound NULL (the bug
+    # the old ChunkedInsert lifetime-union padding introduced).
+    tbl = db["insert_default_across_chunks"]
     tbl.create_column("status", db.types.text, server_default="active")
-    with chunked.ChunkedInsert(tbl, chunksize=1) as inserter:
-        inserter.insert({"id": 1, "status": "custom"})  # chunk 1 supplies it
-        inserter.insert({"id": 2})  # chunk 2 omits it -> keeps the default
+    rows = [{"id": 1, "status": "custom"}, {"id": 2}]
+    assert tbl.insert((row for row in rows), chunk_size=1) == 2
     assert tbl.find_one(id=1)["status"] == "custom"
     assert tbl.find_one(id=2)["status"] == "active"
-
-
-def test_chunked_update_groups_by_field_set(db):
-    # Two queued rows sharing the same field set must be batched into a
-    # single table.update() call, not one call per row.
-    tbl = db["chunk_update_groups"]
-    tbl.insert([{"id": 1, "n": 1}, {"id": 2, "n": 2}])
-
-    calls = []
-    original_update = tbl.update
-
-    def spy(rows, keys, **kwargs):
-        rows = list(rows)
-        calls.append(len(rows))
-        return original_update(rows, keys, **kwargs)
-
-    tbl.update = spy
-    try:
-        updater = chunked.ChunkedUpdate(tbl, ["id"])
-        updater.update({"id": 1, "n": 10})
-        updater.update({"id": 2, "n": 20})
-        updater.flush()
-    finally:
-        del tbl.update
-
-    assert calls == [2], calls
-    assert tbl.find_one(id=1)["n"] == 10
-    assert tbl.find_one(id=2)["n"] == 20
-
-
-def test_chunked_update_callback(db):
-    tbl = db["chunked_update_cb"]
-    tbl.insert([{"id": 1, "n": 1}, {"id": 2, "n": 2}, {"id": 3, "n": 3}])
-    seen = []
-
-    def callback(queue):
-        seen.append(len(queue))
-
-    # chunksize=2 forces an auto-flush mid-stream, exercising both the queue
-    # threshold path and the ChunkedUpdate callback.
-    updater = chunked.ChunkedUpdate(tbl, ["id"], chunksize=2, callback=callback)
-    updater.update({"id": 1, "n": 10})
-    updater.update({"id": 2, "n": 20})
-    updater.update({"id": 3, "n": 30})
-    updater.flush()
-
-    assert sum(seen) == 3, seen
-    assert tbl.find_one(id=1)["n"] == 10
-    assert tbl.find_one(id=3)["n"] == 30
 
 
 def test_update_iterable(db):
@@ -1203,27 +1111,6 @@ def test_auto_create_creates_unique_arbiter(db):
     off2.insert({"a": 1})
     with pytest.raises(SQLAlchemyError):
         off2.upsert({"a": 2}, ["a"], auto_create=False)
-
-
-def test_chunked_update(db):
-    tbl = db["update_many_test"]
-    tbl.insert(
-        [
-            {"temp": 10, "location": "asdf"},
-            {"temp": 20, "location": "qwer"},
-            {"temp": 30, "location": "asdf"},
-        ]
-    )
-
-    chunked_tbl = chunked.ChunkedUpdate(tbl, ["id"])
-    chunked_tbl.update({"id": 1, "temp": 50})
-    chunked_tbl.update({"id": 2, "location": "asdf"})
-    chunked_tbl.update({"id": 3, "temp": 50})
-    chunked_tbl.flush()
-
-    # Ensure data has been updated.
-    assert tbl.find_one(id=1)["temp"] == tbl.find_one(id=3)["temp"] == 50
-    assert tbl.find_one(id=2)["location"] == tbl.find_one(id=3)["location"] == "asdf"
 
 
 def test_upsert_iterable(db):
