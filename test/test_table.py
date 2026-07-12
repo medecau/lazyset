@@ -11,7 +11,7 @@ from sqlalchemy.engine.reflection import Inspector
 from sqlalchemy.exc import ArgumentError, SQLAlchemyError
 from sqlalchemy.schema import Column
 from sqlalchemy.schema import Table as SQLATable
-from sqlalchemy.sql.dml import Delete, Update
+from sqlalchemy.sql.dml import Delete, Insert, Update
 from sqlalchemy.types import BIGINT, TEXT, Unicode
 
 from dataset import DatasetError, QueryError, chunked, connect
@@ -1195,18 +1195,31 @@ def test_upsert_many_heterogeneous_columns_batched(db):
     assert row2["y"] == "y2-new"
 
 
-def test_upsert_many_batched_is_fast(db):
-    tbl = db["upsert_many_timing"]
-    rows = [{"id": i, "value": i} for i in range(1, 501)]
+def test_upsert_many_batched_statement_count(db):
+    # One statement per column group per chunk (executemany), not one per
+    # row: 500 uniform rows at the default chunk_size must compile to
+    # exactly one INSERT ... ON CONFLICT execution. (Replaces a wall-clock
+    # smoke check that even the old per-row implementation could pass.)
+    tbl = db["upsert_many_batched"]
+    tbl.upsert_many([{"id": 0, "value": 0}], "id")  # pre-create cols + arbiter
 
-    start = time.perf_counter()
-    tbl.upsert_many(rows, "id")
-    elapsed = time.perf_counter() - start
+    conn = db.executable
+    original_execute = conn.execute
+    calls = []
 
-    assert len(tbl) == 500
-    # Soft smoke check, not a strict perf gate: the batched rewrite should
-    # comfortably finish 500 new-row upserts well under a second.
-    assert elapsed < 2.0, elapsed
+    def spy(statement, *args, **kwargs):
+        if isinstance(statement, Insert):
+            calls.append(1)
+        return original_execute(statement, *args, **kwargs)
+
+    conn.execute = spy
+    try:
+        tbl.upsert_many([{"id": i, "value": i} for i in range(1, 501)], "id")
+    finally:
+        del conn.execute
+
+    assert len(calls) == 1, len(calls)
+    assert len(tbl) == 501
 
 
 def test_upsert_many_default_chunk_size_does_not_crash_on_sqlite(db):
@@ -1449,7 +1462,9 @@ def test_sync_table_concurrent_different_columns(tmp_path):
             if not getattr(reflected, "done", False):
                 reflected.done = True
                 original_reflect(self)
-                barrier.wait()
+                # Timeout so a pre-barrier thread death breaks the barrier
+                # and fails the test instead of hanging the whole suite.
+                barrier.wait(timeout=5)
             else:
                 original_reflect(self)
 

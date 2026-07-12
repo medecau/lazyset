@@ -21,6 +21,7 @@ from .sample_data import TEST_CITY_1, TEST_DATA
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite://")
 IS_SQLITE = DATABASE_URL.startswith("sqlite")
 IS_MYSQL = "mysql" in DATABASE_URL
+IS_POSTGRES = DATABASE_URL.startswith("postgres")
 
 
 def test_valid_database_url(db):
@@ -353,9 +354,10 @@ def test_schema_extracted_from_url(key):
 
 
 def test_dialect_flags(db):
-    assert db.is_sqlite is True
-    assert db.is_postgres is False
-    assert db.is_mysql is False
+    # Derived from DATABASE_URL so the suite passes on every backend.
+    assert db.is_sqlite is IS_SQLITE
+    assert db.is_postgres is IS_POSTGRES
+    assert db.is_mysql is IS_MYSQL
 
 
 def test_sqlite_wal_mode_for_file_db():
