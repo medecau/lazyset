@@ -728,8 +728,13 @@ class Table:
                     # creation until the first column is added (dataset
                     # creates tables lazily anyway).
                     return
+                # Create first, publish after: assigning _table before the
+                # CREATE left a poisoned cache behind a failed statement
+                # (permissions, disk full, MySQL metadata-lock timeout) —
+                # `exists` stuck True with no table in the DB. On failure
+                # _table stays None and the next call retries.
+                table.create(self.db.executable, checkfirst=True)
                 self._table = table
-                self._table.create(self.db.executable, checkfirst=True)
                 self._columns = None
                 self.db._auto_commit()
         elif len(columns):

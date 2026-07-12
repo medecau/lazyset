@@ -10,6 +10,7 @@ from sqlalchemy import Float
 from sqlalchemy.engine.reflection import Inspector
 from sqlalchemy.exc import ArgumentError, SQLAlchemyError
 from sqlalchemy.schema import Column
+from sqlalchemy.schema import Table as SQLATable
 from sqlalchemy.sql.dml import Delete
 from sqlalchemy.types import BIGINT, TEXT, Unicode
 
@@ -1467,6 +1468,30 @@ def test_sync_table_concurrent_different_columns(tmp_path):
         assert fresh.has_column("b"), fresh.columns
     finally:
         db.close()
+
+
+def test_sync_table_failed_create_retries(db, monkeypatch):
+    # A failed CREATE TABLE (permissions, disk full, lock timeout) must not
+    # publish the table object: _table stuck non-None left `exists` True and
+    # every later write compiling against a table that isn't there.
+    tbl = db["sync_table_failed_create"]
+    original_create = SQLATable.create
+    calls = []
+
+    def failing_create(self, *args, **kwargs):
+        if not calls:
+            calls.append(1)
+            raise RuntimeError("simulated CREATE failure")
+        return original_create(self, *args, **kwargs)
+
+    monkeypatch.setattr(SQLATable, "create", failing_create)
+    with pytest.raises(RuntimeError, match="simulated CREATE failure"):
+        tbl.insert({"a": 1})
+    assert tbl.exists is False
+
+    # The next write retries the CREATE and succeeds.
+    tbl.insert({"a": 2})
+    assert tbl.find_one(a=2) is not None
 
 
 def test_load_missing_table_raises(db):
