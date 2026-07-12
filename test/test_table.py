@@ -182,7 +182,7 @@ def test_write_method_return_values(db, table):
     assert pk == len(TEST_DATA) + 1
 
     # No primary key column: insert() returns None (no PK to report).
-    no_pk_table = db.create_table("no_pk_writes", primary_id=False)
+    no_pk_table = db.table("no_pk_writes", primary_id=False)
     assert no_pk_table.insert({"a": 1}) is None
 
     # insert_ignore() on a genuinely new row returns the inserted primary key.
@@ -201,7 +201,7 @@ def test_write_method_return_values(db, table):
     assert up.upsert({"place": "Berlin", "n": 2}, ["place"]) == 1
 
     # delete() on a table that was never created returns 0 without erroring.
-    missing = db.load_table("truly_missing_delete_target")
+    missing = db["truly_missing_delete_target"]
     assert missing.delete() == 0
 
 
@@ -294,9 +294,9 @@ def test_delete_returns_count_without_sane_rowcount(table, monkeypatch):
     # update(). Stub the dialect flag off and hand the DELETE a result whose
     # rowcount is the unreliable -1: delete() must fall back to the pre-delete
     # count rather than return the bogus rowcount.
-    monkeypatch.setattr(table.db.executable.dialect, "supports_sane_rowcount", False)
+    monkeypatch.setattr(table.db._executable.dialect, "supports_sane_rowcount", False)
 
-    conn = table.db.executable
+    conn = table.db._executable
     original_execute = conn.execute
 
     class _NoSaneResult:
@@ -685,7 +685,7 @@ def test_distinct_requires_column(table):
 
 
 def test_distinct_on_nonexistent_table(db):
-    missing = db.load_table("truly_missing_distinct_table_xyz")
+    missing = db["truly_missing_distinct_table_xyz"]
     assert list(missing.distinct("col")) == []
 
 
@@ -744,7 +744,7 @@ def test_insert_chunk_size_flush(db):
     tbl.insert({"n": 0})  # pre-create the "n" column so the sync step is a no-op
     tbl.delete()
 
-    conn = db.executable
+    conn = db._executable
     original_execute = conn.execute
     calls = []
 
@@ -873,7 +873,7 @@ def test_update_on_deferred_table_raises(db):
     # same _sync_columns choke point as insert()/update(), so this raises a
     # clear DatasetError instead of the old bare KeyError (key-bearing row) or
     # incidental "missing key column" message.
-    tbl = db.create_table("deferred_update_many", primary_id=False)
+    tbl = db.table("deferred_update_many", primary_id=False)
     with pytest.raises(
         DatasetError,
         match=r"^Cannot write to 'deferred_update_many': "
@@ -959,7 +959,7 @@ def test_update_returns_count_without_sane_multi_rowcount(db):
     tbl = db["update_many_no_sane_multi"]
     tbl.insert([{"id": 1, "n": 1}, {"id": 2, "n": 2}, {"id": 3, "n": 3}])
 
-    conn = db.executable
+    conn = db._executable
     original_execute = conn.execute
 
     class _NoSaneResult:
@@ -991,7 +991,7 @@ def test_update_chunk_size_flush_count(db):
     tbl = db["update_many_chunk_flush_count"]
     tbl.insert([{"id": i, "n": i} for i in range(4)])
 
-    conn = db.executable
+    conn = db._executable
     original_execute = conn.execute
     calls = []
 
@@ -1204,7 +1204,7 @@ def test_upsert_batched_statement_count(db):
     tbl = db["upsert_many_batched"]
     tbl.upsert([{"id": 0, "value": 0}], "id")  # pre-create cols + arbiter
 
-    conn = db.executable
+    conn = db._executable
     original_execute = conn.execute
     calls = []
 
@@ -1286,9 +1286,9 @@ def test_upsert_ensure_false_uses_existing_unique_index(db):
     tbl = db["upsert_many_ensure_false_index"]
     tbl.insert({"a": 1, "v": "old"})
     tbl.create_index(["a"], unique=True)
-    before = len(tbl.db.inspect.get_indexes(tbl.name))
+    before = len(tbl.db._inspect.get_indexes(tbl.name))
     tbl.upsert([{"a": 1, "v": "new"}, {"a": 2, "v": "x"}], ["a"], auto_create=False)
-    assert len(tbl.db.inspect.get_indexes(tbl.name)) == before
+    assert len(tbl.db._inspect.get_indexes(tbl.name)) == before
     assert len(tbl) == 2
     assert tbl.find_one(a=1)["v"] == "new"
 
@@ -1398,7 +1398,7 @@ def test_has_column_none_and_columns_before_sync(db, table):
     # Evict from the wrapper cache to force a fresh reflection of _columns
     # (starts at the None sentinel, not an empty dict).
     db._tables.pop("weather", None)
-    fresh = db.load_table("weather")
+    fresh = db["weather"]
     assert "place" in fresh.columns
 
 
@@ -1549,7 +1549,7 @@ def test_sync_table_concurrent_different_columns(tmp_path):
         # _table-cache poisoning on the shared wrapper: the loser overwriting
         # _table would leave its column uncreated in the DB.
         db._tables.pop("race_tbl", None)
-        fresh = db.load_table("race_tbl")
+        fresh = db["race_tbl"]
         assert fresh.has_column("a"), fresh.columns
         assert fresh.has_column("b"), fresh.columns
     finally:
@@ -1580,19 +1580,25 @@ def test_sync_table_failed_create_retries(db, monkeypatch):
     assert tbl.find_one(a=2) is not None
 
 
-def test_load_missing_table_raises(db):
-    tbl = db.load_table("truly_missing_load_table_xyz")
+def test_write_to_missing_table_without_auto_create_raises():
+    # A non-creating handle (auto_create=False) must raise DatasetError on a
+    # write to a table that does not exist, rather than creating it.
+    db = connect(auto_create=False)
+    tbl = db.table("truly_missing_write_target_xyz")
+    # An empty row carries no unknown column to trip the _sync_columns guard,
+    # so it reaches _sync_table, which refuses to create the table.
     with pytest.raises(
-        DatasetError, match=r"^Table does not exist: truly_missing_load_table_xyz$"
+        DatasetError, match=r"^Table does not exist: truly_missing_write_target_xyz$"
     ):
-        tbl.insert({"a": 1})
+        tbl.insert({})
+    db.close()
 
 
 def test_insert_empty_row_on_deferred_table_raises(db):
     # primary_id=False with no columns yet defers table creation; writing an
     # empty row never gives it a column to be created with. This must raise
     # a clear DatasetError, not a raw driver OperationalError.
-    tbl = db.create_table("deferred_columnless", primary_id=False)
+    tbl = db.table("deferred_columnless", primary_id=False)
     with pytest.raises(
         DatasetError,
         match=r"^Cannot write to 'deferred_columnless': "
@@ -1754,7 +1760,7 @@ def test_empty_query(table):
 def test_create_index(table):
     table.create_index(["place"])
     expected_name = index_name("weather", ["place"])
-    indexes = table.db.inspect.get_indexes("weather")
+    indexes = table.db._inspect.get_indexes("weather")
     matched = [i for i in indexes if i["name"] == expected_name]
     assert len(matched) == 1, indexes
     assert matched[0]["column_names"] == ["place"]
@@ -1768,7 +1774,7 @@ def test_create_index_dedups_columns(db):
     tbl = db["create_index_dedup"]
     tbl.insert({"a": 1})
     tbl.create_index(["a", "a"])
-    indexes = tbl.db.inspect.get_indexes("create_index_dedup")
+    indexes = tbl.db._inspect.get_indexes("create_index_dedup")
     assert len(indexes) == 1, indexes
     assert indexes[0]["column_names"] == ["a"], indexes
 
@@ -1781,7 +1787,7 @@ def test_create_index_unique(db):
     # the arbiter index would silently never be built.
     tbl.create_index(["a"])
     tbl.create_index(["a"], unique=True)
-    indexes = tbl.db.inspect.get_indexes("create_index_unique")
+    indexes = tbl.db._inspect.get_indexes("create_index_unique")
     assert len(indexes) == 2, indexes
     uq = [i for i in indexes if i["unique"]]
     assert len(uq) == 1, indexes
@@ -1789,7 +1795,7 @@ def test_create_index_unique(db):
     assert uq[0]["column_names"] == ["a"]
     # Idempotent: a second unique create is a no-op.
     tbl.create_index(["a"], unique=True)
-    assert len(tbl.db.inspect.get_indexes("create_index_unique")) == 2
+    assert len(tbl.db._inspect.get_indexes("create_index_unique")) == 2
 
 
 def test_create_index_merges_mysql_length(db, monkeypatch):
@@ -1821,7 +1827,7 @@ def test_create_index_missing_column_raises(table):
 
 
 def test_create_index_requires_existing_table(db):
-    tbl = db.load_table("truly_missing_index_table_xyz")
+    tbl = db["truly_missing_index_table_xyz"]
     with pytest.raises(DatasetError, match=r"^Table has not been created yet\.$"):
         tbl.create_index(["a"])
 
@@ -1831,7 +1837,7 @@ def test_has_index(db, table):
     assert table.has_index(["temperature"]) is False  # not indexed
     assert table.has_index(["nonexistent_col"]) is False
 
-    missing = db.load_table("truly_missing_has_index_table_xyz")
+    missing = db["truly_missing_has_index_table_xyz"]
     assert missing.has_index(["a"]) is False
 
 
@@ -1848,7 +1854,7 @@ def test_has_index_composite_prefix(db):
     tbl.create_index(["b"])
     assert tbl.has_index(["b"]) is True
 
-    indexes = tbl.db.inspect.get_indexes("has_index_composite")
+    indexes = tbl.db._inspect.get_indexes("has_index_composite")
     assert len(indexes) == 2, indexes
 
 
@@ -1866,7 +1872,7 @@ def test_has_index_thread_safe_cache(tmp_path):
         # every concurrent has_index() call misses the cache and races on
         # the inspector read + cache append.
         db._tables.pop("has_index_thread_safe", None)
-        fresh = db.load_table("has_index_thread_safe")
+        fresh = db["has_index_thread_safe"]
 
         original_get_indexes = Inspector.get_indexes
 
@@ -1906,5 +1912,5 @@ def test_indexes_cache_invalidated_on_drop(table):
     # The dropped table's index is gone; the cached "has an index" answer
     # from before the drop must not leak into the recreated table.
     assert table.has_index(["place"]) is False
-    indexes = table.db.inspect.get_indexes(table.name)
+    indexes = table.db._inspect.get_indexes(table.name)
     assert indexes == []

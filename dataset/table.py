@@ -113,7 +113,7 @@ class Table:
         if table is None:
             # Deferred columnless auto-create table (or a concurrent null in
             # the read gap): transient view until the first column is added.
-            return SQLATable(self.name, self.db.metadata, schema=self.db.schema)
+            return SQLATable(self.name, self.db._metadata, schema=self.db.schema)
         return table
 
     @property
@@ -229,7 +229,7 @@ class Table:
         types: dict[str, ColumnType] | None,
     ) -> Any:
         synced = self._sync_columns(row, auto_create, types=types)
-        res = self.db.executable.execute(self.table.insert().values(synced))
+        res = self.db._executable.execute(self.table.insert().values(synced))
         self.db._auto_commit()
         if res.inserted_primary_key is not None and len(res.inserted_primary_key) > 0:
             return res.inserted_primary_key[0]
@@ -283,7 +283,7 @@ class Table:
             norm = {self._get_column_name(k): v for k, v in row.items()}
             groups.setdefault(frozenset(norm), []).append(norm)
         for group_rows in groups.values():
-            self.db.executable.execute(self.table.insert(), group_rows)
+            self.db._executable.execute(self.table.insert(), group_rows)
         self.db._auto_commit()
         return len(chunk)
 
@@ -392,7 +392,7 @@ class Table:
     ) -> Any:
         synced = self._sync_columns(row, auto_create, types=types)
         norm_keys = self._make_arbiter(keys, auto_create)
-        res = self.db.executable.execute(self._ignore_stmt(norm_keys, values=synced))
+        res = self.db._executable.execute(self._ignore_stmt(norm_keys, values=synced))
         self.db._auto_commit()
         # Gate on rowcount: only a genuine insert (not a skipped conflict) has
         # a primary key to report; the ODKU-noop path's PK is driver-dependent.
@@ -446,7 +446,7 @@ class Table:
             norm = {self._get_column_name(k): v for k, v in row.items()}
             groups.setdefault(frozenset(norm), []).append(norm)
         for group_rows in groups.values():
-            self.db.executable.execute(stmt, group_rows)
+            self.db._executable.execute(stmt, group_rows)
         self.db._auto_commit()
         return len(chunk)
 
@@ -498,7 +498,7 @@ class Table:
         if not len(values):
             return self.count(clause)
         stmt = self.table.update().where(clause).values(values)
-        rp = self.db.executable.execute(stmt)
+        rp = self.db._executable.execute(stmt)
         self.db._auto_commit()
         if rp.supports_sane_rowcount():
             return rp.rowcount
@@ -603,7 +603,7 @@ class Table:
                         for gr in sub
                     )
                 )
-                rp2 = self.db.executable.execute(
+                rp2 = self.db._executable.execute(
                     select(*(self.table.c[k] for k in norm_keys)).where(clause)
                 )
                 matched.update(tuple(r) for r in rp2)
@@ -637,7 +637,7 @@ class Table:
                     }
                 )
             )
-            rp = self.db.executable.execute(stmt, group_rows)
+            rp = self.db._executable.execute(stmt, group_rows)
             if rp.supports_sane_multi_rowcount():
                 updated += rp.rowcount
             else:
@@ -745,7 +745,7 @@ class Table:
             stmt = stmts.get(group_cols)
             if stmt is None:
                 stmt = stmts[group_cols] = self._upsert_stmt(group_cols, norm_keys)
-            self.db.executable.execute(stmt, group_rows)
+            self.db._executable.execute(stmt, group_rows)
         self.db._auto_commit()
         return len(chunk)
 
@@ -809,9 +809,9 @@ class Table:
         # the matching rows BEFORE the delete (afterwards they are gone).
         # Dead on SQLite/PostgreSQL/MySQL (all sane) — parity with update().
         pre = 0
-        if not self.db.executable.dialect.supports_sane_rowcount:
+        if not self.db._executable.dialect.supports_sane_rowcount:
             pre = self.count(clause)
-        rp = self.db.executable.execute(stmt)
+        rp = self.db._executable.execute(stmt)
         self.db._auto_commit()
         return rp.rowcount if rp.supports_sane_rowcount() else pre
 
@@ -823,9 +823,9 @@ class Table:
             try:
                 self._table = SQLATable(
                     self.name,
-                    self.db.metadata,
+                    self.db._metadata,
                     schema=self.db.schema,
-                    autoload_with=self.db.executable,
+                    autoload_with=self.db._executable,
                 )
             except NoSuchTableError:
                 self._table = None
@@ -872,7 +872,7 @@ class Table:
                     self._add_missing_columns_locked(columns)
                     return
                 self._threading_warn()
-                table = SQLATable(self.name, self.db.metadata, schema=self.db.schema)
+                table = SQLATable(self.name, self.db._metadata, schema=self.db.schema)
                 if self._primary_id is not False:
                     column = Column(
                         self._primary_id,
@@ -894,7 +894,7 @@ class Table:
                 # (permissions, disk full, MySQL metadata-lock timeout) —
                 # `exists` stuck True with no table in the DB. On failure
                 # _table stays None and the next call retries.
-                table.create(self.db.executable, checkfirst=True)
+                table.create(self.db._executable, checkfirst=True)
                 self._table = table
                 self._columns = None
                 self.db._auto_commit()
@@ -913,7 +913,7 @@ class Table:
         self._threading_warn()
         for column in columns:
             if not self.has_column(column.name):
-                self.db.op.add_column(self.name, column, schema=self.db.schema)
+                self.db._op.add_column(self.name, column, schema=self.db.schema)
         self._reflect_table()
         self.db._auto_commit()
 
@@ -1188,7 +1188,7 @@ class Table:
                 return
 
             self._threading_warn()
-            self.db.op.drop_column(self.table.name, name, schema=self.table.schema)
+            self.db._op.drop_column(self.table.name, name, schema=self.table.schema)
             self._reflect_table()
             self.db._auto_commit()
 
@@ -1200,7 +1200,7 @@ class Table:
         with self.db.lock:
             if self.exists:
                 self._threading_warn()
-                self.table.drop(self.db.executable, checkfirst=True)
+                self.table.drop(self.db._executable, checkfirst=True)
                 self._table = None
                 self._columns = None
                 self.db._tables.pop(self.name, None)
@@ -1219,7 +1219,7 @@ class Table:
             for column in columns_:
                 if not self.has_column(column):
                     return False
-            indexes = self.db.inspect.get_indexes(self.name, schema=self.db.schema)
+            indexes = self.db._inspect.get_indexes(self.name, schema=self.db.schema)
             for index in indexes:
                 idx_columns = index.get("column_names", [])
                 if idx_columns[: len(columns_)] == list(columns_):
@@ -1243,7 +1243,7 @@ class Table:
         if not self.exists:
             return False
         cols = list(columns)
-        indexes = self.db.inspect.get_indexes(self.name, schema=self.db.schema)
+        indexes = self.db._inspect.get_indexes(self.name, schema=self.db.schema)
         for index in indexes:
             if index.get("unique") and index.get("column_names", []) == cols:
                 return True
@@ -1326,19 +1326,19 @@ class Table:
                     # Existing duplicate key values make the arbiter index
                     # impossible to build; surface that clearly, never swallow.
                     try:
-                        idx.create(self.db.executable)
+                        idx.create(self.db._executable)
                     except IntegrityError as exc:
                         if not self.db.in_transaction:
                             # Leave the autobegun transaction usable (on
                             # PostgreSQL it is aborted until rolled back).
-                            self.db.executable.rollback()
+                            self.db._executable.rollback()
                         raise DatasetError(
                             f"Cannot create a unique index on {columns!r}: "
                             f"table {self.name!r} already contains rows with "
                             "duplicate values for these columns."
                         ) from exc
                 else:
-                    idx.create(self.db.executable)
+                    idx.create(self.db._executable)
                 self.db._auto_commit()
 
     def find(
@@ -1402,7 +1402,7 @@ class Table:
             query = query.order_by(*orderings)
 
         stream_conn = None
-        conn = self.db.executable
+        conn = self.db._executable
         if _streamed:
             stream_conn = self.db.engine.connect()
             conn = stream_conn.execution_options(stream_results=True)
@@ -1470,7 +1470,7 @@ class Table:
         args = self._filter_clause(_clauses, where, kwargs)
         query = select(func.count()).where(args)
         query = query.select_from(self.table)
-        rp = self.db.executable.execute(query)
+        rp = self.db._executable.execute(query)
         res = rp.fetchone()
         if res is not None:
             return int(res[0])

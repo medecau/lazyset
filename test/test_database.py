@@ -45,33 +45,33 @@ def test_contains(db, table):
     assert "weather" in db, db.tables
 
 
-def test_create_table(db):
+def test_table_creates_with_default_pk(db):
     table = db["foo"]
-    assert db.has_table(table.table.name)
+    assert table.table.name in db
     assert len(table.table.columns) == 1, table.table.columns
     assert "id" in table.table.c, table.table.c
 
 
-def test_create_table_no_ids(db):
-    table = db.create_table("foo_no_id", primary_id=False)
+def test_table_no_primary_id(db):
+    table = db.table("foo_no_id", primary_id=False)
     assert table.table.name == "foo_no_id"
     assert len(table.table.columns) == 0, table.table.columns
 
 
-def test_create_table_custom_id1(db):
+def test_table_custom_string_pk_255(db):
     pid = "string_id"
-    table = db.create_table("foo2", pid, db.types.string(255))
-    assert db.has_table(table.table.name)
+    table = db.table("foo2", primary_id=pid, primary_type=db.types.string(255))
+    assert table.table.name in db
     assert len(table.table.columns) == 1, table.table.columns
     assert pid in table.table.c, table.table.c
     table.insert({pid: "foobar"})
     assert table.find_one(string_id="foobar")[pid] == "foobar"
 
 
-def test_create_table_custom_id2(db):
+def test_table_custom_string_pk_50(db):
     pid = "string_id"
-    table = db.create_table("foo3", pid, db.types.string(50))
-    assert db.has_table(table.table.name)
+    table = db.table("foo3", primary_id=pid, primary_type=db.types.string(50))
+    assert table.table.name in db
     assert len(table.table.columns) == 1, table.table.columns
     assert pid in table.table.c, table.table.c
 
@@ -79,10 +79,10 @@ def test_create_table_custom_id2(db):
     assert table.find_one(string_id="foobar")[pid] == "foobar"
 
 
-def test_create_table_custom_id3(db):
+def test_table_custom_int_pk(db):
     pid = "int_id"
-    table = db.create_table("foo4", primary_id=pid)
-    assert db.has_table(table.table.name)
+    table = db.table("foo4", primary_id=pid)
+    assert table.table.name in db
     assert len(table.table.columns) == 1, table.table.columns
     assert pid in table.table.c, table.table.c
 
@@ -92,9 +92,9 @@ def test_create_table_custom_id3(db):
     assert table.find_one(int_id=124)[pid] == 124
 
 
-def test_create_table_shorthand1(db):
+def test_table_shorthand_int_pk(db):
     pid = "int_id"
-    table = db.get_table("foo5", pid)
+    table = db.table("foo5", primary_id=pid)
     assert len(table.table.columns) == 1, table.table.columns
     assert pid in table.table.c, table.table.c
 
@@ -106,16 +106,16 @@ def test_create_table_shorthand1(db):
 
 def test_duplicate_primary_key_raises(db):
     pid = "int_id"
-    table = db.create_table("dup_pk", primary_id=pid)
+    table = db.table("dup_pk", primary_id=pid)
     table.insert({pid: 123})
     with pytest.raises(IntegrityError):
         table.insert({pid: 123})
-    db.executable.rollback()
+    db._executable.rollback()
 
 
-def test_create_table_shorthand2(db):
+def test_table_shorthand_string_pk(db):
     pid = "string_id"
-    table = db.get_table("foo6", primary_id=pid, primary_type=db.types.string(255))
+    table = db.table("foo6", primary_id=pid, primary_type=db.types.string(255))
     assert len(table.table.columns) == 1, table.table.columns
     assert pid in table.table.c, table.table.c
 
@@ -146,9 +146,39 @@ def test_invalid_values(db, table):
         table.insert({"date": True, "temperature": "wrong_value", "place": "tmp_place"})
 
 
-def test_load_table(db, table):
-    tbl = db.load_table("weather")
+def test_table_must_exist_loads(db, table):
+    tbl = db.table("weather", must_exist=True)
     assert tbl.table.name == table.table.name
+
+
+def test_table_must_exist_missing_raises(db):
+    # must_exist turns the pre-3.0 "silently deferred DatasetError on first
+    # use" into a loud SchemaError at the accessor.
+    with pytest.raises(SchemaError, match="Table does not exist"):
+        db.table("no_such_table_xyz", must_exist=True)
+
+
+def test_table_primary_id_conflict_cached(db):
+    db.table("pk_conflict_cached", primary_id="a")
+    # A second call requesting a different primary_id must not be silently
+    # ignored (the pre-3.0 behaviour) — it raises.
+    with pytest.raises(SchemaError, match="cannot reconfigure to primary_id"):
+        db.table("pk_conflict_cached", primary_id="b")
+    # Re-requesting the same primary_id is fine, and unspecified never conflicts.
+    assert db.table("pk_conflict_cached", primary_id="a").name == "pk_conflict_cached"
+    assert db.table("pk_conflict_cached").name == "pk_conflict_cached"
+
+
+def test_table_primary_id_conflict_existing(db):
+    # Create + materialize a table with an "a" primary key, then evict the
+    # cached handle so the next call must reflect the real DB primary key.
+    db.table("pk_conflict_db", primary_id="a").insert({"a": 1})
+    db._tables.pop("pk_conflict_db", None)
+    with pytest.raises(SchemaError, match="cannot reconfigure to primary_id"):
+        db.table("pk_conflict_db", primary_id="b")
+    db._tables.pop("pk_conflict_db", None)
+    # The real primary key still matches, so requesting it is accepted.
+    assert db.table("pk_conflict_db", primary_id="a").name == "pk_conflict_db"
 
 
 def test_query(db, table):
@@ -157,11 +187,11 @@ def test_query(db, table):
 
 
 def test_table_cache_updates(db):
-    tbl1 = db.get_table("people")
+    tbl1 = db.table("people")
     data = OrderedDict([("first_name", "John"), ("last_name", "Smith")])
     tbl1.insert(data)
     data["id"] = 1
-    tbl2 = db.get_table("people")
+    tbl2 = db.table("people")
     assert dict(next(tbl2.find())) == dict(data), (next(tbl2.find()), data)
 
 
@@ -201,6 +231,20 @@ def test_query_with_params(db, table):
     assert len(rows) == 3, rows
 
 
+def test_query_params_mapping(db, table):
+    # The params= mapping is the escape hatch for bind names that cannot be
+    # spelled as keyword arguments (here a reserved word); it also composes
+    # with the keyword-only _step.
+    rows = list(
+        db.query(
+            "SELECT * FROM weather WHERE place = :in",
+            {"in": TEST_CITY_1},
+            _step=1,
+        )
+    )
+    assert len(rows) == 3, rows
+
+
 def test_query_step(db, table):
     # _step=None disables chunked fetching (the only way to disable it).
     rows = list(db.query("SELECT * FROM weather", _step=None))
@@ -216,9 +260,9 @@ def test_explicit_rollback(db):
     assert tbl.count() == 1, tbl.count()
 
 
-def test_flush_tables_concurrent_with_get_table(tmp_path):
+def test_flush_tables_concurrent_with_accessor(tmp_path):
     # _flush_tables iterated the shared self._tables without the lock; a
-    # concurrent get_table inserting a new wrapper (under the lock) resized
+    # concurrent db.table() inserting a new wrapper (under the lock) resized
     # the dict mid-iteration, raising "dictionary changed size during
     # iteration" on the rolling-back thread. A tiny thread-switch interval
     # makes the overlap land reliably. A file-backed DB (not :memory:) keeps
@@ -270,7 +314,7 @@ def test_rollback_invalidates_column_cache(db):
     # PostgreSQL rollback() would undo the ADD COLUMN; here we drop it
     # out-of-band and commit so the DB genuinely lacks the column.
     db.query("ALTER TABLE rollback_cache DROP COLUMN a")
-    db.executable.commit()
+    db._executable.commit()
 
     # _flush_tables (via rollback) nulled only _table, leaving _columns
     # populated; _column_keys short-circuits on a non-None cache, so
@@ -297,7 +341,7 @@ def test_closed_database_raises():
     db["closed_test"].insert({"a": 1})
     db.close()
     with pytest.raises(DatasetError):
-        _ = db.executable
+        _ = db._executable
 
 
 def test_contains_invalid_name(db):
@@ -306,25 +350,28 @@ def test_contains_invalid_name(db):
     assert "   " not in db
 
 
-def test_load_table_caches(db, table):
-    # Evict from the wrapper cache so load_table must reflect it afresh.
+def test_table_cache_repopulated(db, table):
+    # Evict from the wrapper cache so db.table() must reflect it afresh.
     db._tables.pop("weather", None)
-    tbl = db.load_table("weather")
+    tbl = db.table("weather", must_exist=True)
     assert tbl.exists
     assert "weather" in db._tables
 
 
 def test_connect_no_auto_create():
     db = connect(auto_create=False)
-    # With auto_create off, get_table routes through load_table.
-    tbl = db.get_table("any_table")
+    # With auto_create off, db.table() returns a non-creating handle: a write
+    # to a missing table raises rather than creating it.
+    tbl = db.table("any_table")
     assert tbl.name == "any_table"
+    with pytest.raises(SchemaError, match="auto_create=False"):
+        tbl.insert({"a": 1})
     db.close()
 
 
 def test_result_iter_attributes():
     db = connect()
-    conn = db.executable
+    conn = db._executable
     rp = conn.execute(text("SELECT 1 AS a, 2 AS b"))
     it = Results(rp, connection=conn)
     assert it.result_proxy is rp
@@ -390,7 +437,7 @@ def test_constructor_kwargs_forwarded(db):
     assert d.engine.echo is True
     d.close()
 
-    tbl = db.get_table("no_increment", primary_increment=False)
+    tbl = db.table("no_increment", primary_increment=False)
     assert tbl.table.c["id"].autoincrement is False
 
 
@@ -399,7 +446,7 @@ def test_text_primary_type_rejected(db):
         SchemaError,
         match=r"^Text-based primary_type support is dropped, use db\.types\.$",
     ):
-        db.create_table("bad_primary_type", primary_type="str")
+        db.table("bad_primary_type", primary_type="str")
 
 
 def test_connect_forwards_kwargs():
@@ -491,7 +538,7 @@ def test_close_atomic_with_concurrent_use(tmp_path):
 
     def use():
         try:
-            result["conn"] = db.executable
+            result["conn"] = db._executable
         except DatasetError as e:
             result["error"] = str(e)
 
@@ -519,6 +566,18 @@ def test_connection_closed_after_commit(db):
     tbl = db["conn_closed_test"]
     db.begin()
     tbl.insert({"a": 1})
-    conn = db.executable
+    conn = db._executable
     db.commit()
     assert conn.closed
+
+
+def test_removed_and_privatized_accessors(db):
+    # The 3.0 accessor collapse removed the old table accessors and made the
+    # SQLAlchemy plumbing private; guard against accidental re-exposure.
+    for gone in ("create_table", "get_table", "load_table", "has_table"):
+        assert not hasattr(db, gone), gone
+    for public in ("executable", "op", "inspect", "metadata"):
+        assert not hasattr(db, public), public
+    # The private replacements still work.
+    assert db._executable is not None
+    assert db._inspect is not None

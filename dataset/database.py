@@ -1,5 +1,6 @@
 import logging
 import threading
+from collections.abc import Mapping
 from typing import Any, Literal
 from urllib.parse import parse_qs, urlparse
 
@@ -19,6 +20,7 @@ from dataset.util import (
     Results,
     RowFactory,
     SchemaError,
+    normalize_column_key,
     normalize_table_name,
     safe_url,
 )
@@ -70,8 +72,9 @@ class Database:
         # emulating that keeps our in-memory names equal to the stored ones.
         # SQLite/MySQL have no byte limit, so no byte trim is applied there.
         self._max_ident_bytes: int | None = 63 if self.is_postgres else None
-        if on_connect_statements is None:
-            on_connect_statements = []
+        # Defensive copy: we append the WAL pragma below, and must not mutate
+        # a list the caller still holds a reference to.
+        on_connect_statements = list(on_connect_statements or [])
 
         def _run_on_connect(dbapi_con: Any, con_record: Any) -> None:
             # reference:
@@ -94,7 +97,7 @@ class Database:
         self._tables: dict[str, Table] = {}
 
     @property
-    def executable(self) -> Connection:
+    def _executable(self) -> Connection:
         """Connection against which statements will be executed."""
         with self.lock:
             tid = threading.get_ident()
@@ -105,21 +108,18 @@ class Database:
             return self.connections[tid]
 
     @property
-    def op(self) -> Operations:
+    def _op(self) -> Operations:
         """Get an alembic operations context."""
-        ctx = MigrationContext.configure(self.executable)
+        ctx = MigrationContext.configure(self._executable)
         return Operations(ctx)
 
     @property
-    def inspect(self) -> Inspector:
+    def _inspect(self) -> Inspector:
         """Get a SQLAlchemy inspector."""
-        return inspect(self.executable)
-
-    def has_table(self, name: str) -> bool:
-        return self.inspect.has_table(name, schema=self.schema)
+        return inspect(self._executable)
 
     @property
-    def metadata(self) -> MetaData:
+    def _metadata(self) -> MetaData:
         """Return a SQLAlchemy schema cache object."""
         return MetaData(schema=self.schema)
 
@@ -142,7 +142,7 @@ class Database:
         """Clear the table metadata after transaction rollbacks.
 
         Holds the lock and snapshots the shared table registry before
-        iterating: a concurrent get_table() mutates self._tables under the
+        iterating: a concurrent table() mutates self._tables under the
         same lock, which would otherwise resize the dict mid-iteration. All
         three caches are reset — nulling only _table leaves _column_keys
         short-circuiting on a stale _columns dict, so a rolled-back
@@ -163,7 +163,7 @@ class Database:
         explicit transaction via ``begin()``/``with db:``.
         """
         if not self.in_transaction:
-            self.executable.commit()
+            self._executable.commit()
 
     def begin(self) -> None:
         """Enter a transaction explicitly.
@@ -172,9 +172,9 @@ class Database:
         """
         if not hasattr(self.local, "tx"):
             self.local.tx = []
-        if not self.executable.in_transaction():
+        if not self._executable.in_transaction():
             # No active transaction; start an explicit one (master semantics).
-            self.local.tx.append(self.executable.begin())
+            self.local.tx.append(self._executable.begin())
         else:
             # An autobegin transaction is already active (e.g., from a read);
             # track the nesting depth without starting a second transaction.
@@ -191,7 +191,7 @@ class Database:
                 if tx is not True:
                     tx.commit()
                 else:
-                    self.executable.commit()
+                    self._executable.commit()
                 self._release_connection()
 
     def rollback(self) -> None:
@@ -205,7 +205,7 @@ class Database:
                 if tx is not True:
                     tx.rollback()
                 else:
-                    self.executable.rollback()
+                    self._executable.rollback()
                 self._release_connection()
             self._flush_tables()
 
@@ -249,12 +249,12 @@ class Database:
     @property
     def tables(self) -> list[str]:
         """Get a listing of all tables that exist in the database."""
-        return self.inspect.get_table_names(schema=self.schema)
+        return self._inspect.get_table_names(schema=self.schema)
 
     @property
     def views(self) -> list[str]:
         """Get a listing of all views that exist in the database."""
-        return self.inspect.get_view_names(schema=self.schema)
+        return self._inspect.get_view_names(schema=self.schema)
 
     def __contains__(self, table_name: str) -> bool:
         """Check if the given table name exists in the database."""
@@ -268,40 +268,47 @@ class Database:
         except ValueError:
             return False
 
-    def create_table(
+    def table(
         self,
         table_name: str,
+        *,
+        must_exist: bool = False,
         primary_id: str | Literal[False] | None = None,
         primary_type: ColumnType | None = None,
         primary_increment: bool | None = None,
     ) -> Table:
-        """Create a new table.
+        """Load or create a table and return a :py:class:`Table <dataset.Table>`.
 
-        Either loads a table or creates it if it doesn't exist yet. You can
-        define the name and type of the primary key field, if a new table is to
-        be created. The default is to create an auto-incrementing integer,
-        ``id``. You can also set the primary key to be a string or big integer.
-        The caller will be responsible for the uniqueness of ``primary_id`` if
-        it is defined as a text type. You can disable auto-increment behaviour
-        for numeric primary keys by setting `primary_increment` to `False`.
+        This is the single table accessor; ``db[table_name]`` is shorthand for
+        ``db.table(table_name)``. With ``auto_create`` enabled (the default) the
+        table is created on the first write if it does not exist yet.
 
-        Returns a :py:class:`Table <dataset.Table>` instance.
+        ``primary_id`` / ``primary_type`` / ``primary_increment`` configure the
+        primary key **at creation time** and are ignored once the table exists.
+        The default is an auto-incrementing integer ``id``; pass
+        ``primary_id=False`` for no primary key, or a ``db.types`` value as
+        ``primary_type`` (text primary keys are the caller's to keep unique).
+        Pass ``must_exist=True`` to require an existing table — a missing table
+        then raises :py:class:`SchemaError <dataset.SchemaError>` instead of
+        being auto-created (use it to read a table you did not create).
+
+        Repeated calls return the same cached handle. Requesting a ``primary_id``
+        that contradicts the cached handle, or the primary key of an existing
+        database table, raises :py:class:`SchemaError <dataset.SchemaError>`
+        rather than silently ignoring the request (the pre-3.0 behaviour).
         ::
 
-            table = db.create_table('population')
+            table = db.table('population')
+            table = db['population']  # shorthand
 
-            # custom id and type
-            table2 = db.create_table('population2', 'age')
-            table3 = db.create_table('population3',
-                                     primary_id='city',
-                                     primary_type=db.types.text)
-            # custom length of String
-            table4 = db.create_table('population4',
-                                     primary_id='city',
-                                     primary_type=db.types.string(25))
-            # no primary key
-            table5 = db.create_table('population5',
-                                     primary_id=False)
+            # custom primary key, applied only when the table is created
+            db.table('cities', primary_id='city', primary_type=db.types.text)
+            db.table('cities', primary_id='city',
+                     primary_type=db.types.string(25))
+            db.table('log', primary_id=False)  # no primary key
+
+            # read-only access to a table created elsewhere
+            existing = db.table('population', must_exist=True)
         """
         if isinstance(primary_type, str):
             raise SchemaError(
@@ -309,66 +316,90 @@ class Database:
             )
         table_name = normalize_table_name(table_name, max_bytes=self._max_ident_bytes)
         with self.lock:
-            if table_name not in self._tables:
-                self._tables[table_name] = Table(
-                    self,
-                    table_name,
-                    primary_id=primary_id,
-                    primary_type=primary_type,
-                    primary_increment=primary_increment,
-                    auto_create=True,
+            cached = self._tables.get(table_name)
+            if cached is not None:
+                self._reject_primary_conflict(
+                    cached._primary_id, primary_id, table_name
                 )
-            return self._tables[table_name]
+                if must_exist and not cached.exists:
+                    raise SchemaError(f"Table does not exist: {table_name}")
+                return cached
+            # Only reflect when we actually need to: must_exist and an explicit
+            # primary_id are the deliberate, careful paths. The default
+            # db[name] stays lazy — no round-trip, the Table creates itself on
+            # first write.
+            if must_exist or primary_id is not None:
+                exists = self._inspect.has_table(table_name, schema=self.schema)
+                if must_exist and not exists:
+                    raise SchemaError(f"Table does not exist: {table_name}")
+                if exists and primary_id is not None:
+                    self._reject_primary_conflict(
+                        self._existing_primary_id(table_name), primary_id, table_name
+                    )
+            table = Table(
+                self,
+                table_name,
+                primary_id=primary_id,
+                primary_type=primary_type,
+                primary_increment=primary_increment,
+                auto_create=self.auto_create and not must_exist,
+            )
+            self._tables[table_name] = table
+            return table
 
-    def load_table(self, table_name: str) -> Table:
-        """Load a table.
+    def _existing_primary_id(self, table_name: str) -> str | Literal[False]:
+        """Return an existing table's sole primary-key column, or ``False``.
 
-        This will fail if the tables does not already exist in the database. If
-        the table exists, its columns will be reflected and are available on
-        the :py:class:`Table <dataset.Table>` object.
-
-        Returns a :py:class:`Table <dataset.Table>` instance.
-        ::
-
-            table = db.load_table('population')
+        A composite (or absent) primary key returns ``False`` — dataset only
+        models single-column primary keys, so anything else cannot match a
+        caller-supplied ``primary_id`` and is reported as a conflict.
         """
-        table_name = normalize_table_name(table_name, max_bytes=self._max_ident_bytes)
-        with self.lock:
-            if table_name not in self._tables:
-                self._tables[table_name] = Table(self, table_name)
-            return self._tables[table_name]
+        pk = self._inspect.get_pk_constraint(table_name, schema=self.schema)
+        columns = pk.get("constrained_columns") or []
+        return columns[0] if len(columns) == 1 else False
 
-    def get_table(
-        self,
+    @staticmethod
+    def _reject_primary_conflict(
+        current: str | Literal[False],
+        requested: str | Literal[False] | None,
         table_name: str,
-        primary_id: str | Literal[False] | None = None,
-        primary_type: ColumnType | None = None,
-        primary_increment: bool | None = None,
-    ) -> Table:
-        """Load or create a table.
+    ) -> None:
+        """Raise if an explicit ``primary_id`` contradicts the known one.
 
-        This is now the same as ``create_table``.
-        ::
-
-            table = db.get_table('population')
-            # you can also use the short-hand syntax:
-            table = db['population']
+        ``current`` is the primary key already configured (a cached handle) or
+        reflected (an existing table); ``requested`` is what the caller passed.
+        ``None`` means "unspecified" and never conflicts. String comparison is
+        case-insensitive, matching column-name normalization. The pre-3.0
+        accessors silently ignored a mismatching ``primary_id`` here.
         """
-        if not self.auto_create:
-            return self.load_table(table_name)
-        return self.create_table(
-            table_name, primary_id, primary_type, primary_increment
+        if requested is None:
+            return
+        if isinstance(requested, str) and isinstance(current, str):
+            if normalize_column_key(requested) == normalize_column_key(current):
+                return
+        elif requested == current:  # both False, or False vs a name
+            return
+        raise SchemaError(
+            f"Table {table_name!r} already has primary_id={current!r}, "
+            f"cannot reconfigure to primary_id={requested!r}"
         )
 
     def __getitem__(self, table_name: str) -> Table:
-        """Get a given table."""
-        return self.get_table(table_name)
+        """Get a table by name — shorthand for :py:meth:`table`."""
+        return self.table(table_name)
 
     def _ipython_key_completions_(self) -> list[str]:
         """Completion for table names with IPython."""
         return self.tables
 
-    def query(self, query: str | Executable, **kwargs: Any) -> Results:
+    def query(
+        self,
+        query: str | Executable,
+        params: Mapping[str, Any] | None = None,
+        *,
+        _step: int | None = QUERY_STEP,
+        **kwargs: Any,
+    ) -> Results:
         """Run a statement on the database directly.
 
         Allows for the execution of arbitrary read/write queries. A query can
@@ -377,9 +408,12 @@ class Database:
         If a plain string is passed in, it will be converted to an expression
         automatically.
 
-        Keyword arguments will be used for parameter binding. Use a named bind
-        parameter in the query (i.e. ``SELECT * FROM tbl WHERE a = :foo``) and
-        pass the value as a keyword argument (i.e. ``foo='bar'``).
+        Bind a named parameter in the query (i.e. ``SELECT * FROM tbl WHERE a =
+        :foo``) by passing the value as a keyword argument (``foo='bar'``). For
+        bind names that collide with reserved words, or with ``params`` /
+        ``_step`` themselves, pass the whole mapping as ``params`` instead.
+        ``_step`` sets the result fetch batch size (``None`` fetches all rows in
+        one go).
         ::
 
             statement = 'SELECT user, COUNT(*) c FROM photos GROUP BY user'
@@ -390,11 +424,11 @@ class Database:
         """
         if isinstance(query, str):
             query = text(query)
-        _step = kwargs.pop("_step", QUERY_STEP)
-        if kwargs:
-            rp = self.executable.execute(query, kwargs)
+        binds = {**params, **kwargs} if params is not None else kwargs
+        if binds:
+            rp = self._executable.execute(query, binds)
         else:
-            rp = self.executable.execute(query)
+            rp = self._executable.execute(query)
         return Results(rp, row_type=self.row_type, step=_step)
 
     def __repr__(self) -> str:

@@ -9,7 +9,7 @@ from .sample_data import TEST_DATA
 def db():
     db = dataset.connect()
     yield db
-    db.executable.rollback()
+    db._executable.rollback()
     for table in db.tables:
         db[table].drop()
     db.close()
