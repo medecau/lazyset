@@ -1,5 +1,4 @@
 import logging
-import os
 import threading
 import time
 import warnings
@@ -24,11 +23,6 @@ from dataset import (
 from dataset.util import index_name
 
 from .sample_data import TEST_CITY_1, TEST_CITY_2, TEST_DATA
-
-# Backend detected at collection time so it can gate skipif marks, which are
-# evaluated before the ``db`` fixture exists.
-DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite://")
-IS_SQLITE = DATABASE_URL.startswith("sqlite")
 
 
 def test_insert(table):
@@ -1607,22 +1601,27 @@ def test_insert_empty_row_on_deferred_table_raises(db):
         tbl.insert({})
 
 
-@pytest.mark.skipif(not IS_SQLITE, reason="drop_column succeeds on non-SQLite backends")
-def test_drop_column_guards():
-    # A standalone connection, not the shared `db` fixture: we close it
-    # mid-test, which would break the fixture's own teardown.
+def test_drop_column_succeeds_and_requires_engine():
+    # 3.0 attempts DROP COLUMN on every backend and lets the DB decide; SQLite
+    # >= 3.35 supports it natively, so the column is really gone afterwards. A
+    # standalone connection, not the shared `db` fixture: we close it mid-test,
+    # which would break the fixture's own teardown.
     db = connect()
-    tbl = db["drop_column_guard"]
-    tbl.insert({"a": 1})
+    tbl = db["drop_column_test"]
+    tbl.insert({"a": 1, "b": 2})
+    assert tbl.has_column("b")
 
-    with pytest.raises(
-        RuntimeError, match=r"^SQLite does not support dropping columns\.$"
-    ):
-        tbl.drop_column("a")
+    tbl.drop_column("b")
+    assert not tbl.has_column("b")
+    assert tbl.has_column("a")
 
+    # Dropping a column that does not exist is a documented no-op.
+    tbl.drop_column("nonexistent")
+
+    # Once the engine is disposed there is nothing to alter — a loud error.
     db.close()
     with pytest.raises(
-        RuntimeError, match=r"^Cannot drop columns when no engine is available\.$"
+        DatasetError, match=r"^Cannot drop columns when no engine is available\.$"
     ):
         tbl.drop_column("a")
 

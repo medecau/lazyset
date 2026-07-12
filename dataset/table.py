@@ -1176,11 +1176,12 @@ class Table:
 
             table.drop_column('created_at')
 
+        DROP COLUMN is attempted on every backend; the database decides whether
+        it is supported (SQLite gained ``ALTER TABLE ... DROP COLUMN`` in 3.35),
+        so an older engine surfaces its own error rather than a preemptive one.
         """
         if self.db.engine is None:
-            raise RuntimeError("Cannot drop columns when no engine is available.")
-        if self.db.engine.dialect.name == "sqlite":
-            raise RuntimeError("SQLite does not support dropping columns.")
+            raise DatasetError("Cannot drop columns when no engine is available.")
         name = self._get_column_name(name)
         with self.db.lock:
             if not self.exists or not self.has_column(name):
