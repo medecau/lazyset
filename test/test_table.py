@@ -14,7 +14,7 @@ from sqlalchemy.schema import Table as SQLATable
 from sqlalchemy.sql.dml import Delete, Insert, Update
 from sqlalchemy.types import BIGINT, TEXT, Unicode
 
-from dataset import DatasetError, QueryError, chunked, connect
+from dataset import DatasetError, NoSuchColumnError, QueryError, chunked, connect
 from dataset.util import index_name
 
 from .sample_data import TEST_CITY_1, TEST_CITY_2, TEST_DATA
@@ -364,42 +364,100 @@ def test_find_pagination(table):
 
 
 def test_find_step_zero(table):
-    # _step=0 disables chunked fetching (treated as None internally).
-    assert len(list(table.find(_step=0))) == len(TEST_DATA)
+    # _step=None disables chunked fetching (the only way to disable it).
+    assert len(list(table.find(_step=None))) == len(TEST_DATA)
 
 
 def test_find_order_by(table):
-    ds = list(table.find(order_by=["temperature"]))
+    ds = list(table.find(_order_by=["temperature"]))
     assert ds[0]["temperature"] == -1, ds
-    ds = list(table.find(order_by=["-temperature"]))
+    ds = list(table.find(_order_by=["-temperature"]))
     assert ds[0]["temperature"] == 8, ds
 
 
-def test_find_and_order_by_missing_or_none_column(db, table):
-    # Filtering/ordering on a column that doesn't exist is silently ignored.
-    assert list(table.find(nonexistent_col="x")) == []
-    assert [dict(r) for r in table.find(order_by="nonexistent_col")] == [
-        dict(r) for r in table.find()
-    ]
+def test_find_missing_filter_column_raises(table):
+    # Filtering on a column that doesn't exist is now a loud error, not a
+    # silent false() that matched nothing.
+    with pytest.raises(NoSuchColumnError, match=r"^No such column: nonexistent_col$"):
+        list(table.find(nonexistent_col="x"))
+    with pytest.raises(NoSuchColumnError, match=r"^No such column: nonexistent_col$"):
+        table.count(nonexistent_col="x")
+    with pytest.raises(NoSuchColumnError, match=r"^No such column: nonexistent_col$"):
+        table.delete(nonexistent_col="x")
 
-    # A None entry in an order_by list is skipped, not an error.
-    assert [dict(r) for r in table.find(order_by=[None, "temperature"])] == [
-        dict(r) for r in table.find(order_by="temperature")
-    ]
 
-    # An invalid column *followed by* a valid one: the loop must "continue"
-    # past it, not "break" out and drop the remaining orderings.
-    assert [
-        dict(r) for r in table.find(order_by=["nonexistent_col", "temperature"])
-    ] == [dict(r) for r in table.find(order_by="temperature")]
+def test_find_missing_order_column_raises(table):
+    # Ordering by a column that doesn't exist is now a loud error, not a
+    # silently-dropped ordering.
+    with pytest.raises(NoSuchColumnError, match=r"^No such column: nonexistent_col$"):
+        list(table.find(_order_by="nonexistent_col"))
+    # An invalid column *followed by* a valid one still raises (it is not
+    # skipped over).
+    with pytest.raises(NoSuchColumnError, match=r"^No such column: nonexistent_col$"):
+        list(table.find(_order_by=["nonexistent_col", "temperature"]))
+
+
+def test_find_order_by_none_and_dash(db, table):
+    # A None entry in an _order_by list is skipped, not an error.
+    assert [dict(r) for r in table.find(_order_by=[None, "temperature"])] == [
+        dict(r) for r in table.find(_order_by="temperature")
+    ]
 
     # A column name starting with "X" exercises lstrip("-") specifically
     # (stripping leading '-' characters), not a substring/set mutation.
     tbl2 = db["xtag_order"]
     tbl2.insert({"Xtag": 1})
     tbl2.insert({"Xtag": 2})
-    ds = list(tbl2.find(order_by="-Xtag"))
+    ds = list(tbl2.find(_order_by="-Xtag"))
     assert [r["Xtag"] for r in ds] == [2, 1]
+
+
+def test_where_escape_hatch(db):
+    # where= filters columns whose names collide with reserved modifiers or
+    # start with an underscore — they can't be passed as bare kwargs.
+    tbl = db["where_hatch"]
+    tbl.insert({"_limit": 5, "v": "a"})
+    tbl.insert({"_limit": 9, "v": "b"})
+    rows = list(tbl.find(where={"_limit": 5}))
+    assert len(rows) == 1 and rows[0]["v"] == "a", rows
+    assert tbl.count(where={"_limit": 9}) == 1
+    assert tbl.find_one(where={"_limit": 5})["v"] == "a"
+    # A bare-kwarg _limit is a reserved read modifier, not a filter.
+    assert len(list(tbl.find(where={"_limit": 5}, _limit=10))) == 1
+    tbl.delete(where={"_limit": 9})
+    assert tbl.count() == 1
+
+
+def test_where_and_kwargs_combine(table):
+    # where= and kwargs both filter; the kwargs value wins on a key collision.
+    rows = list(table.find(where={"place": TEST_CITY_1}, temperature=6))
+    assert len(rows) == 1, rows
+    assert rows[0]["temperature"] == 6
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda t: t.count(_limit=1),
+        lambda t: t.count(_offset=1),
+        lambda t: list(t.find(_bogus=1)),
+        lambda t: t.delete(_step=1),
+        lambda t: list(t.distinct("place", _streamed=True)),
+        lambda t: t.find_one(_step=1),
+    ],
+)
+def test_reserved_kwarg_rejected(table, call):
+    # A leading-underscore filter kwarg (typo or a modifier passed where it
+    # does not apply) raises QueryError rather than silently matching nothing.
+    with pytest.raises(QueryError, match="reserved"):
+        call(table)
+
+
+def test_find_unknown_column_kwarg_raises(table):
+    # A non-underscore typo'd column name is a missing column, not a reserved
+    # kwarg: it raises NoSuchColumnError.
+    with pytest.raises(NoSuchColumnError, match=r"^No such column: typo$"):
+        list(table.find(typo="x"))
 
 
 def test_find_no_engine_raises():
@@ -758,7 +816,7 @@ def test_chunked_insert_preserves_values(db):
         inserter.insert({"a": 1, "b": "x"})
         inserter.insert({"a": 2})  # missing "b", must be padded with NULL
 
-    rows = list(tbl.find(order_by="a"))
+    rows = list(tbl.find(_order_by="a"))
     assert rows[0]["a"] == 1 and rows[0]["b"] == "x"
     assert rows[1]["a"] == 2 and rows[1]["b"] is None
 
@@ -1311,7 +1369,7 @@ def test_upsert_many_none_key(db):
     tbl.upsert_many([{"k": None, "v": "first"}], ["k"])
     assert len(tbl) == 1
     tbl.upsert_many([{"k": None, "v": "second"}], ["k"])
-    rows = list(tbl.find(order_by="id"))
+    rows = list(tbl.find(_order_by="id"))
     assert len(rows) == 2, rows
     assert {r["v"] for r in rows} == {"first", "second"}
 
@@ -1361,7 +1419,7 @@ def test_drop_operations(table):
     assert table._table is not None, "table shouldn't be dropped yet"
     table.drop()
     assert table._table is None, "table should be dropped now"
-    assert list(table.all()) == [], table.all()
+    assert list(table) == [], list(table)
     assert table.count() == 0, table.count()
 
 

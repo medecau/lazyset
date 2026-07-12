@@ -1,10 +1,10 @@
 import logging
 import threading
 import warnings
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal
 
-from sqlalchemy import false, func, select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -49,6 +49,12 @@ class Table:
     """Represents a table in a database and exposes common operations."""
 
     PRIMARY_DEFAULT = "id"
+    # Reserved read-modifier keyword names. A leading-underscore key arriving
+    # in a read helper's ``**kwargs`` is never a column filter; it routes
+    # through ``where=`` or a positional clause instead.
+    _RESERVED_KWARGS = frozenset(
+        {"_limit", "_offset", "_order_by", "_step", "_streamed"}
+    )
     # The OR-of-AND existence check (update_many's non-sane-multi-rowcount
     # fallback) builds one clause per distinct key; SQLite's default
     # expression-tree depth limit is 1000, so it is sub-batched at this size
@@ -231,7 +237,10 @@ class Table:
         if self._check_ensure(ensure):
             self.create_index(keys)
         args, _ = self._keys_to_args(row, keys)
-        if self.count(**args) == 0:
+        # Route through where= (not **args): a key column literally named like
+        # a reserved modifier or starting with "_" must not trip the kwarg
+        # validator on this internal existence check.
+        if self.count(where=args) == 0:
             # row was already synced above; avoid insert()'s own redundant
             # _sync_columns pass by writing directly.
             res = self.db.executable.execute(self.table.insert().values(row))
@@ -653,7 +662,12 @@ class Table:
                 chunk = []
         return processed
 
-    def delete(self, *clauses: ColumnElement[bool], **filters: SQLValue) -> int:
+    def delete(
+        self,
+        *clauses: ColumnElement[bool],
+        where: Mapping[str, SQLValue] | None = None,
+        **filters: SQLValue,
+    ) -> int:
         """Delete rows from the table.
 
         Keyword arguments can be used to add column-based filters. The filter
@@ -662,13 +676,15 @@ class Table:
 
             table.delete(place='Berlin')
 
-        If no arguments are given, all records are deleted.
+        ``where`` is the escape hatch for underscore-named columns, matching
+        :py:meth:`find() <dataset.Table.find>`. If no arguments are given, all
+        records are deleted.
 
         Returns the number of deleted rows.
         """
         if not self.exists:
             return 0
-        clause = self._args_to_clause(filters, clauses=clauses)
+        clause = self._filter_clause(clauses, where, filters)
         stmt = self.table.delete().where(clause)
         # On dialects without sane rowcount, rp.rowcount is unreliable; count
         # the matching rows BEFORE the delete (afterwards they are gone).
@@ -886,7 +902,11 @@ class Table:
         for column, value in args.items():
             column = self._get_column_name(column)
             if not self.has_column(column):
-                clauses.append(false())
+                # Loud failure: a filter on a column that does not exist used
+                # to compile to false() and silently match nothing. The
+                # table-missing case stays lenient — callers guard on
+                # ``self.exists`` before reaching here.
+                raise NoSuchColumnError(f"No such column: {column}")
             elif isinstance(value, (list, tuple, set)):
                 clauses.append(self._generate_clause(column, "in", value))
             elif isinstance(value, dict):
@@ -908,12 +928,50 @@ class Table:
             column = ordering.lstrip("-")
             column = self._get_column_name(column)
             if not self.has_column(column):
-                continue
+                # Loud failure, matching the filter path: ordering by a
+                # non-existent column used to be silently dropped.
+                raise NoSuchColumnError(f"No such column: {column}")
             if ordering.startswith("-"):
                 orderings.append(self.table.c[column].desc())
             else:
                 orderings.append(self.table.c[column].asc())
         return orderings
+
+    def _reject_reserved_kwargs(self, kwargs: Mapping[str, Any]) -> None:
+        """Reject leading-underscore filter kwargs on the read helpers.
+
+        Leading-underscore names are reserved for read modifiers
+        (``_limit``, ``_offset``, ``_order_by``, ``_step``, ``_streamed``);
+        one arriving in ``**kwargs`` is either a typo or a modifier passed to
+        a method that does not accept it. Filter an underscore-named column
+        via ``where={...}`` or a positional SQLAlchemy clause instead.
+        """
+        for key in kwargs:
+            if key.startswith("_"):
+                raise QueryError(
+                    f"Unknown or misplaced reserved parameter: {key!r}. "
+                    "Leading-underscore names are reserved for read modifiers; "
+                    "filter an underscore-named column via where={...} or a "
+                    "positional SQLAlchemy clause."
+                )
+
+    def _filter_clause(
+        self,
+        clauses: Sequence[ColumnElement[bool]],
+        where: Mapping[str, SQLValue] | None,
+        kwargs: Mapping[str, SQLValue],
+    ) -> ColumnElement[bool]:
+        """Validate filter kwargs and build the combined WHERE clause.
+
+        ``where`` is the escape hatch for filtering columns whose names start
+        with an underscore or collide with a reserved modifier: its keys
+        bypass the leading-underscore rejection that applies to ``kwargs``.
+        On a key collision the ``kwargs`` value wins.
+        """
+        self._reject_reserved_kwargs(kwargs)
+        args: MutableRow = dict(where) if where else {}
+        args.update(kwargs)
+        return self._args_to_clause(args, clauses=clauses)
 
     def _keys_to_args(
         self, row: WriteRow, keys: Sequence[str]
@@ -1132,9 +1190,10 @@ class Table:
         *_clauses: ColumnElement[bool],
         _limit: int | None = None,
         _offset: int = 0,
-        order_by: str | Sequence[str] | None = None,
+        _order_by: str | Sequence[str] | None = None,
         _streamed: bool = False,
         _step: int | None = QUERY_STEP,
+        where: Mapping[str, SQLValue] | None = None,
         **kwargs: SQLValue,
     ) -> Results:
         """Perform a simple search on the table.
@@ -1154,14 +1213,19 @@ class Table:
         sign to the column name for descending order::
 
             # sort results by a column 'year'
-            results = table.find(country='France', order_by='year')
+            results = table.find(country='France', _order_by='year')
             # return all rows sorted by multiple columns (descending by year)
-            results = table.find(order_by=['country', '-year'])
+            results = table.find(_order_by=['country', '-year'])
 
-        ``order_by``, along with ``_limit``, ``_offset``, ``_step`` and
-        ``_streamed``, are reserved parameter names: a column literally
-        named e.g. ``order_by`` can't be passed as an equality filter
-        through ``**kwargs``.
+        ``_order_by``, ``_limit``, ``_offset``, ``_step`` and ``_streamed``
+        are reserved read modifiers; every leading-underscore name is
+        reserved. To filter a column whose name starts with an underscore
+        (or otherwise collides), pass it via ``where``::
+
+            results = table.find(where={'_id': 5})
+
+        Filtering or ordering on a column that does not exist raises
+        :py:class:`NoSuchColumnError <dataset.NoSuchColumnError>`.
 
         You can also submit filters based on criteria other than equality,
         see :ref:`advanced_filters` for details.
@@ -1175,11 +1239,8 @@ class Table:
         if self.db.engine is None:
             raise DatasetError("Cannot run queries when no engine is available.")
 
-        if _step is False or _step == 0:
-            _step = None
-
-        orderings = self._args_to_order_by(order_by)
-        args = self._args_to_clause(kwargs, clauses=_clauses)
+        orderings = self._args_to_order_by(_order_by)
+        args = self._filter_clause(_clauses, where, kwargs)
         query = self.table.select().where(args).limit(_limit).offset(_offset)
         if len(orderings):
             query = query.order_by(*orderings)
@@ -1197,11 +1258,19 @@ class Table:
             connection=stream_conn,
         )
 
-    def find_one(self, *args: ColumnElement[bool], **kwargs: SQLValue) -> Row | None:
+    def find_one(
+        self,
+        *args: ColumnElement[bool],
+        _offset: int = 0,
+        where: Mapping[str, SQLValue] | None = None,
+        **kwargs: SQLValue,
+    ) -> Row | None:
         """Get a single result from the table.
 
         Works just like :py:meth:`find() <dataset.Table.find>` but returns one
-        result, or ``None``.
+        result, or ``None``. ``_offset`` and ``where`` behave as on ``find``;
+        the result-streaming modifiers (``_step``/``_streamed``) do not apply
+        to a single-row fetch.
         ::
 
             row = table.find_one(country='United States')
@@ -1209,7 +1278,17 @@ class Table:
         if not self.exists:
             return None
 
-        resiter = self.find(*args, _limit=1, _step=None, **kwargs)  # type: ignore[arg-type]
+        # Validate here too: a reserved modifier in kwargs (e.g. _step) would
+        # otherwise collide with the values find_one forces below.
+        self._reject_reserved_kwargs(kwargs)
+        resiter = self.find(
+            *args,
+            _limit=1,
+            _offset=_offset,
+            _step=None,
+            where=where,
+            **kwargs,  # type: ignore[arg-type]
+        )
         try:
             for row in resiter:
                 return row
@@ -1217,15 +1296,22 @@ class Table:
             resiter.close()
         return None
 
-    def count(self, *_clauses: ColumnElement[bool], **kwargs: SQLValue) -> int:
-        """Return the count of results for the given filter set."""
-        # NOTE: this does not have support for limit and offset since I can't
-        # see how this is useful. Still, there might be compatibility issues
-        # with people using these flags. Let's see how it goes.
+    def count(
+        self,
+        *_clauses: ColumnElement[bool],
+        where: Mapping[str, SQLValue] | None = None,
+        **kwargs: SQLValue,
+    ) -> int:
+        """Return the count of results for the given filter set.
+
+        Accepts the same positional clauses, ``where`` escape hatch and
+        keyword filters as :py:meth:`find() <dataset.Table.find>` (but no
+        limit/offset).
+        """
         if not self.exists:
             return 0
 
-        args = self._args_to_clause(kwargs, clauses=_clauses)
+        args = self._filter_clause(_clauses, where, kwargs)
         query = select(func.count()).where(args)
         query = query.select_from(self.table)
         rp = self.db.executable.execute(query)
@@ -1243,6 +1329,7 @@ class Table:
         *args: str | ColumnElement[bool],
         _limit: int | None = None,
         _offset: int | None = 0,
+        where: Mapping[str, SQLValue] | None = None,
         **kwargs: SQLValue,
     ) -> Results:
         """Return all the unique (distinct) values for the given ``columns``.
@@ -1254,6 +1341,9 @@ class Table:
             table.distinct('year', 'country')
             # you can also combine this with a filter
             table.distinct('year', country='China')
+
+        ``where`` is the escape hatch for underscore-named filter columns,
+        matching :py:meth:`find() <dataset.Table.find>`.
         """
         if not self.exists:
             return Results(None, row_type=self.db.row_type)
@@ -1272,7 +1362,7 @@ class Table:
                     raise NoSuchColumnError(f"No such column: {column}")
                 columns.append(self.table.c[column])
 
-        clause = self._args_to_clause(kwargs, clauses=clauses)
+        clause = self._filter_clause(clauses, where, kwargs)
         if not len(columns):
             raise DatasetError("distinct() requires at least one column name")
 
@@ -1285,9 +1375,6 @@ class Table:
             .order_by(*[c.asc() for c in columns])
         )
         return self.db.query(q)
-
-    # Legacy methods for running find queries.
-    all = find
 
     def __iter__(self) -> Results:
         """Return all rows of the table as simple dictionaries.

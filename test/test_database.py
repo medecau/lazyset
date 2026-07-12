@@ -162,7 +162,7 @@ def test_table_cache_updates(db):
     tbl1.insert(data)
     data["id"] = 1
     tbl2 = db.get_table("people")
-    assert dict(next(tbl2.all())) == dict(data), (next(tbl2.all()), data)
+    assert dict(next(tbl2.find())) == dict(data), (next(tbl2.find()), data)
 
 
 def test_thread_connections_released():
@@ -202,8 +202,8 @@ def test_query_with_params(db, table):
 
 
 def test_query_step(db, table):
-    # _step of 0 disables chunked fetching (treated as None internally).
-    rows = list(db.query("SELECT * FROM weather", _step=0))
+    # _step=None disables chunked fetching (the only way to disable it).
+    rows = list(db.query("SELECT * FROM weather", _step=None))
     assert len(rows) == len(TEST_DATA), rows
 
 

@@ -391,8 +391,6 @@ class Database:
         if isinstance(query, str):
             query = text(query)
         _step = kwargs.pop("_step", QUERY_STEP)
-        if _step is False or _step == 0:
-            _step = None
         if kwargs:
             rp = self.executable.execute(query, kwargs)
         else:
