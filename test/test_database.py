@@ -314,9 +314,9 @@ def test_load_table_caches(db, table):
     assert "weather" in db._tables
 
 
-def test_connect_no_ensure_schema():
-    db = connect(ensure_schema=False)
-    # With schema generation off, get_table routes through load_table.
+def test_connect_no_auto_create():
+    db = connect(auto_create=False)
+    # With auto_create off, get_table routes through load_table.
     tbl = db.get_table("any_table")
     assert tbl.name == "any_table"
     db.close()
@@ -379,7 +379,7 @@ def test_constructor_defaults_direct():
     # own defaults directly.
     with tempfile.NamedTemporaryFile(suffix=".db") as f:
         db = Database(f"sqlite:///{f.name}")
-        assert db.ensure_schema is True
+        assert db.auto_create is True
         mode = list(next(db.query("PRAGMA journal_mode")).values())[0]
         assert mode.lower() == "wal"
         db.close()
@@ -403,9 +403,9 @@ def test_text_primary_type_rejected(db):
 
 
 def test_connect_forwards_kwargs():
-    db = connect("sqlite:///:memory:", schema="myschema", ensure_schema=False)
+    db = connect("sqlite:///:memory:", schema="myschema", auto_create=False)
     assert db.schema == "myschema"
-    assert db.ensure_schema is False
+    assert db.auto_create is False
     db.close()
 
     db = connect(engine_kwargs={"echo": True})

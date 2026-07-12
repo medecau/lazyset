@@ -34,7 +34,7 @@ class Database:
         url: str,
         schema: str | None = None,
         engine_kwargs: dict[str, Any] | None = None,
-        ensure_schema: bool = True,
+        auto_create: bool = True,
         row_type: RowFactory = dict,
         sqlite_wal_mode: bool = True,
         on_connect_statements: list[str] | None = None,
@@ -90,7 +90,7 @@ class Database:
         self.types = Types(is_postgres=self.is_postgres)
         self.url = url
         self.row_type: RowFactory = row_type
-        self.ensure_schema = ensure_schema
+        self.auto_create = auto_create
         self._tables: dict[str, Table] = {}
 
     @property
@@ -354,7 +354,7 @@ class Database:
             # you can also use the short-hand syntax:
             table = db['population']
         """
-        if not self.ensure_schema:
+        if not self.auto_create:
             return self.load_table(table_name)
         return self.create_table(
             table_name, primary_id, primary_type, primary_increment

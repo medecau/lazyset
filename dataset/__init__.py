@@ -45,7 +45,7 @@ def connect(
     url: str | None = None,
     schema: str | None = None,
     engine_kwargs: dict[str, Any] | None = None,
-    ensure_schema: bool = True,
+    auto_create: bool = True,
     row_type: RowFactory = dict,
     sqlite_wal_mode: bool = True,
     on_connect_statements: list[str] | None = None,
@@ -64,8 +64,8 @@ def connect(
 
     One of the main features of `dataset` is to automatically create tables and
     columns as data is inserted. This behaviour can optionally be disabled via
-    the `ensure_schema` argument. It can also be overridden in a lot of the
-    data manipulation methods using the `ensure` flag.
+    the `auto_create` argument. It can also be overridden in a lot of the
+    data manipulation methods using the `auto_create` flag.
 
     If you want to run custom SQLite pragmas on database connect, you can add them
     to on_connect_statements as a set of strings. You can view a full
@@ -82,7 +82,7 @@ def connect(
         url,
         schema=schema,
         engine_kwargs=engine_kwargs,
-        ensure_schema=ensure_schema,
+        auto_create=auto_create,
         row_type=row_type,
         sqlite_wal_mode=sqlite_wal_mode,
         on_connect_statements=on_connect_statements,

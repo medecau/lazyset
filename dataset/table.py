@@ -178,12 +178,12 @@ class Table:
     def insert(
         self,
         row: WriteRow,
-        ensure: bool | None = None,
+        auto_create: bool | None = None,
         types: dict[str, ColumnType] | None = None,
     ) -> Any:
         """Add a ``row`` dict by inserting it into the table.
 
-        If ``ensure`` is set, any of the keys of the row are not
+        If ``auto_create`` is set, any of the keys of the row are not
         table columns, they will be created automatically.
 
         During column creation, ``types`` will be checked for a key
@@ -198,7 +198,7 @@ class Table:
 
         Returns the inserted row's primary key.
         """
-        row = self._sync_columns(row, ensure, types=types)
+        row = self._sync_columns(row, auto_create, types=types)
         res = self.db.executable.execute(self.table.insert().values(row))
         self.db._auto_commit()
         if res.inserted_primary_key is not None and len(res.inserted_primary_key) > 0:
@@ -209,14 +209,14 @@ class Table:
         self,
         row: WriteRow,
         keys: Sequence[str],
-        ensure: bool | None = None,
+        auto_create: bool | None = None,
         types: dict[str, ColumnType] | None = None,
     ) -> Any:
         """Add a ``row`` dict into the table if the row does not exist.
 
         If rows with matching ``keys`` exist no change is made.
 
-        Setting ``ensure`` results in automatically creating missing columns,
+        Setting ``auto_create`` results in automatically creating missing columns,
         i.e., keys of the row are not table columns.
 
         During column creation, ``types`` will be checked for a key
@@ -225,16 +225,16 @@ class Table:
         guessed from the row value, defaulting to a simple unicode
         field.
 
-        With ``ensure`` on (the default), an index on ``keys`` is created
-        as a side effect. Pass ``ensure=False`` if you don't want that,
+        With ``auto_create`` on (the default), an index on ``keys`` is created
+        as a side effect. Pass ``auto_create=False`` if you don't want that,
         e.g. on a locked-down or very large table.
         ::
 
             data = dict(id=10, title='I am a banana!')
             table.insert_ignore(data, ['id'])
         """
-        row = self._sync_columns(row, ensure, types=types)
-        if self._check_ensure(ensure):
+        row = self._sync_columns(row, auto_create, types=types)
+        if self._check_auto_create(auto_create):
             self.create_index(keys)
         args, _ = self._keys_to_args(row, keys)
         # Route through where= (not **args): a key column literally named like
@@ -257,7 +257,7 @@ class Table:
         self,
         rows: Sequence[WriteRow],
         chunk_size: int = 1000,
-        ensure: bool | None = None,
+        auto_create: bool | None = None,
         types: dict[str, ColumnType] | None = None,
     ) -> int:
         """Add many rows at a time.
@@ -284,7 +284,7 @@ class Table:
             for key in row:
                 if key not in sync_row:
                     sync_row[key] = row[key]
-        self._sync_columns(sync_row, ensure, types=types)
+        self._sync_columns(sync_row, auto_create, types=types)
 
         inserted = 0
         chunk: list[MutableRow] = []
@@ -319,7 +319,7 @@ class Table:
         self,
         row: WriteRow,
         keys: Sequence[str],
-        ensure: bool | None = None,
+        auto_create: bool | None = None,
         types: dict[str, ColumnType] | None = None,
     ) -> int:
         """Update a row in the table.
@@ -335,7 +335,7 @@ class Table:
             table.update(data, ['id'])
 
         If keys in ``row`` update columns not present in the table, they will
-        be created based on the settings of ``ensure`` and ``types``, matching
+        be created based on the settings of ``auto_create`` and ``types``, matching
         the behavior of :py:meth:`insert() <dataset.Table.insert>`.
 
         Since the same ``row`` dict supplies both the filter (``keys``) and
@@ -344,7 +344,7 @@ class Table:
 
         Returns the number of rows matched by ``keys``.
         """
-        row = self._sync_columns(row, ensure, types=types)
+        row = self._sync_columns(row, auto_create, types=types)
         args, row = self._keys_to_args(row, keys)
         clause = self._args_to_clause(args)
         if not len(row):
@@ -361,7 +361,7 @@ class Table:
         rows: Sequence[WriteRow],
         keys: Sequence[str],
         chunk_size: int = 1000,
-        ensure: bool | None = None,
+        auto_create: bool | None = None,
         types: dict[str, ColumnType] | None = None,
     ) -> int:
         """Update many rows in the table at a time.
@@ -382,7 +382,7 @@ class Table:
 
         # Sync columns up front, mirroring insert_many's pre-scan (key
         # columns included): a new value column is created honouring the
-        # previously-dead ensure/types params, and an empty write to a
+        # previously-dead auto_create/types params, and an empty write to a
         # deferred table raises the same clear DatasetError as insert()/
         # update() instead of a raw CompileError or a bare KeyError.
         sample: MutableRow = {}
@@ -390,7 +390,7 @@ class Table:
             for col in row:
                 if col not in sample:
                     sample[col] = row[col]
-        self._sync_columns(sample, ensure, types=types)
+        self._sync_columns(sample, auto_create, types=types)
 
         # Normalize key names now that the columns exist, so a case-mismatched
         # key (e.g. ['ID'] against an 'id' column) resolves instead of raising
@@ -427,7 +427,7 @@ class Table:
             # Update when chunk_size is fulfilled or this is the last row
             if len(chunk) == chunk_size or index == len(rows) - 1:
                 # Group rows by their exact value-column set so a column a row
-                # omits is left untouched instead of NULLed. With ensure=False
+                # omits is left untouched instead of NULLed. With auto_create=False
                 # an unknown value column was never created, so drop it (like
                 # update()) rather than compile an UPDATE for it. Store the
                 # (key values, value dict) per row; the synthetic bind names
@@ -523,7 +523,7 @@ class Table:
         self,
         row: WriteRow,
         keys: Sequence[str],
-        ensure: bool | None = None,
+        auto_create: bool | None = None,
         types: dict[str, ColumnType] | None = None,
     ) -> Any:
         """An UPSERT is a smart combination of insert and update.
@@ -531,20 +531,20 @@ class Table:
         If rows with matching ``keys`` exist they will be updated, otherwise a
         new row is inserted in the table.
 
-        With ``ensure`` on (the default), an index on ``keys`` is created
-        as a side effect. Pass ``ensure=False`` if you don't want that,
+        With ``auto_create`` on (the default), an index on ``keys`` is created
+        as a side effect. Pass ``auto_create=False`` if you don't want that,
         e.g. on a locked-down or very large table.
         ::
 
             data = dict(id=10, title='I am a banana!')
             table.upsert(data, ['id'])
         """
-        row = self._sync_columns(row, ensure, types=types)
-        if self._check_ensure(ensure):
+        row = self._sync_columns(row, auto_create, types=types)
+        if self._check_auto_create(auto_create):
             self.create_index(keys)
-        row_count = self.update(row, keys, ensure=False)
+        row_count = self.update(row, keys, auto_create=False)
         if row_count == 0:
-            return self.insert(row, ensure=False)
+            return self.insert(row, auto_create=False)
         return True
 
     def _upsert_stmt(
@@ -554,7 +554,7 @@ class Table:
 
         The SET side references the proposed row values (``excluded`` /
         ``inserted``), so a single statement serves every row in the group
-        under executemany. Unknown columns (possible with ``ensure=False``)
+        under executemany. Unknown columns (possible with ``auto_create=False``)
         are left out of the SET; the extra parameter keys are ignored at
         execute time, matching insert_many.
         """
@@ -584,7 +584,7 @@ class Table:
         rows: Sequence[WriteRow],
         keys: Sequence[str],
         chunk_size: int = 1000,
-        ensure: bool | None = None,
+        auto_create: bool | None = None,
         types: dict[str, ColumnType] | None = None,
     ) -> int:
         """Insert-or-update many rows at a time using a DB-native UPSERT.
@@ -594,11 +594,11 @@ class Table:
         per column group: the database decides row existence by SQL equality
         on ``keys``, atomically per statement.
 
-        With ``ensure`` on (the default), a UNIQUE index on ``keys`` is
+        With ``auto_create`` on (the default), a UNIQUE index on ``keys`` is
         created as a side effect — the conflict arbiter the native upsert
         requires. This raises :py:class:`DatasetError <dataset.DatasetError>`
         if the table already contains rows with duplicate values for
-        ``keys``. With ``ensure=False`` a unique index or primary key on
+        ``keys``. With ``auto_create=False`` a unique index or primary key on
         exactly ``keys`` must already exist, or the database raises its own
         error.
 
@@ -624,14 +624,14 @@ class Table:
             for key in row:
                 if key not in sync_row:
                     sync_row[key] = row[key]
-        self._sync_columns(sync_row, ensure, types=types)
+        self._sync_columns(sync_row, auto_create, types=types)
 
         # Normalize key names now that the columns exist, so a
         # case-mismatched key (e.g. ['ID'] against an 'id' column) resolves
         # to the real column name used by the arbiter index and statement.
         norm_keys = [self._get_column_name(k) for k in keys]
 
-        if self._check_ensure(ensure):
+        if self._check_auto_create(auto_create):
             self.create_index(norm_keys, unique=True)
 
         # One compiled statement per column set, cached across chunks.
@@ -801,30 +801,50 @@ class Table:
     def _sync_columns(
         self,
         row: WriteRow,
-        ensure: bool | None,
+        auto_create: bool | None,
         types: dict[str, ColumnType] | None = None,
     ) -> MutableRow:
         """Create missing columns (or the table) prior to writes.
 
-        If automatic schema generation is disabled (``ensure`` is ``False``),
-        this will remove any keys from the ``row`` for which there is no
-        matching column.
+        With ``auto_create=False`` no schema is generated: a row key that is
+        not an existing column raises
+        :py:class:`SchemaError <dataset.SchemaError>` naming the offending
+        column(s) (rather than being silently dropped), and passing ``types``
+        is rejected as a dead argument (nothing will be created for it).
         """
-        ensure = self._check_ensure(ensure)
+        auto_create = self._check_auto_create(auto_create)
         types = types or {}
         types = {self._get_column_name(k): v for (k, v) in types.items()}
+        if not auto_create and types:
+            # types= only takes effect while creating columns; with creation
+            # off it is inert — surface the misuse instead of ignoring it.
+            raise SchemaError(
+                f"types= is ineffective with auto_create=False on table "
+                f"{self.name!r}: no columns will be created for {sorted(types)}."
+            )
         out = {}
         sync_columns = {}
+        unknown: list[str] = []
         for name, value in row.items():
             name = self._get_column_name(name)
             if self.has_column(name):
                 out[name] = value
-            elif ensure:
+            elif auto_create:
                 _type = types.get(name)
                 if _type is None:
                     _type = self.db.types.guess(value)
                 sync_columns[name] = Column(name, _type)
                 out[name] = value
+            else:
+                unknown.append(name)
+        if unknown:
+            # Loud failure: with auto_create=False these keys used to be
+            # silently dropped, quietly discarding data the caller wrote.
+            raise SchemaError(
+                f"Unknown column(s) on table {self.name!r} with "
+                f"auto_create=False: {unknown}. Enable auto_create to add "
+                "them, or drop them from the row."
+            )
         self._sync_table(list(sync_columns.values()))
         # Known limitation (L6): this reads self._table lock-free, so a
         # concurrent drop()/_flush_tables() could null it here and raise a
@@ -837,10 +857,10 @@ class Table:
             )
         return out
 
-    def _check_ensure(self, ensure: bool | None) -> bool:
-        if ensure is None:
-            return self.db.ensure_schema
-        return ensure
+    def _check_auto_create(self, auto_create: bool | None) -> bool:
+        if auto_create is None:
+            return self.db.auto_create
+        return auto_create
 
     def _generate_clause(
         self, column: str, op: str, value: SQLValue
@@ -1019,7 +1039,7 @@ class Table:
         """
         Explicitly create a new column ``name`` with a type that is appropriate
         to store the given example ``value``.  The type is guessed in the same
-        way as for the insert method with ``ensure=True``.
+        way as for the insert method with ``auto_create=True``.
         ::
 
             table.create_column_by_example('length', 4.2)

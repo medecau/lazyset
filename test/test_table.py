@@ -14,7 +14,14 @@ from sqlalchemy.schema import Table as SQLATable
 from sqlalchemy.sql.dml import Delete, Insert, Update
 from sqlalchemy.types import BIGINT, TEXT, Unicode
 
-from dataset import DatasetError, NoSuchColumnError, QueryError, chunked, connect
+from dataset import (
+    DatasetError,
+    NoSuchColumnError,
+    QueryError,
+    SchemaError,
+    chunked,
+    connect,
+)
 from dataset.util import index_name
 
 from .sample_data import TEST_CITY_1, TEST_CITY_2, TEST_DATA
@@ -49,7 +56,7 @@ def test_insert_ignore(table):
 
 def test_insert_ignore_single_sync_columns_pass(table):
     # insert_ignore already ran _sync_columns on the row; delegating to
-    # insert(row, ensure=False) redundantly re-ran it. has_column() is
+    # insert(row, auto_create=False) redundantly re-ran it. has_column() is
     # called once per row column inside _sync_columns, so a non-key column
     # (not touched by create_index/count's own has_column calls) must be
     # checked exactly once, not twice.
@@ -84,14 +91,14 @@ def test_insert_ignore_missing_key_column_raises(table):
     assert len(table) == before
 
 
-def test_insert_ignore_missing_key_column_raises_ensure_false(table):
-    # With ensure=False the create_index guard is skipped, so the absent key
+def test_insert_ignore_missing_key_column_raises_auto_create_false(table):
+    # With auto_create=False the create_index guard is skipped, so the absent key
     # column previously slipped through: _keys_to_args defaulted it to None,
     # _args_to_clause compiled it to false(), count was 0, and the row was
     # inserted as a silent duplicate on every call. _keys_to_args must raise.
     before = len(table)
     with pytest.raises(DatasetError, match=r"^No such column: nonexistent_col$"):
-        table.insert_ignore({"place": "Berlin"}, ["nonexistent_col"], ensure=False)
+        table.insert_ignore({"place": "Berlin"}, ["nonexistent_col"], auto_create=False)
     assert len(table) == before
 
 
@@ -99,7 +106,7 @@ def test_update_missing_table_column_raises(table):
     # A key column absent from the table (not merely from the row) used to
     # compile to false() and make update() silently return 0. It must raise.
     with pytest.raises(DatasetError, match=r"^No such column: nonexistent_col$"):
-        table.update({"place": "Berlin"}, ["nonexistent_col"], ensure=False)
+        table.update({"place": "Berlin"}, ["nonexistent_col"], auto_create=False)
 
 
 def test_insert_ignore_all_key(table):
@@ -928,9 +935,9 @@ def test_update_many_heterogeneous_columns_across_chunks(db):
 
 
 def test_update_many_auto_creates_columns(db):
-    # update_many never called _sync_columns, so its ensure/types params were
-    # dead and a new value column raised a raw CompileError. With ensure
-    # defaulting on, the column must be created before the UPDATE.
+    # update_many never called _sync_columns, so its auto_create/types params
+    # were dead and a new value column raised a raw CompileError. With
+    # auto_create defaulting on, the column must be created before the UPDATE.
     tbl = db["update_many_autocreate"]
     tbl.insert_many([{"id": 1}, {"id": 2}])
     tbl.update_many([{"id": 1, "note": "hello"}], "id")
@@ -1102,23 +1109,34 @@ def _write_row(tbl, method_name, row, keys, **kwargs):
     "method_name",
     ["insert", "insert_ignore", "insert_many", "update", "upsert", "upsert_many"],
 )
-def test_ensure_false_and_types_forwarding(db, method_name):
-    tbl = db[f"ensure_types_{method_name}"]
+def test_auto_create_false_rejects_unknown_column(db, method_name):
+    tbl = db[f"ac_false_{method_name}"]
     tbl.insert({"id": 1, "place": "seed"})
 
-    # ensure=False: a column absent from the row's keys must not be created.
-    # id=2/3 are fresh rows so insert()/insert_many() (which always INSERT,
-    # unlike insert_ignore/update/upsert) don't collide with the id=1 seed.
-    _write_row(
-        tbl,
-        method_name,
-        {"id": 2, "place": "seed2", "newcol": 123},
-        ["id"],
-        ensure=False,
-    )
+    # auto_create=False + an unknown column is now a loud SchemaError naming
+    # the column, not a silent drop of the caller's data.
+    with pytest.raises(SchemaError, match="newcol"):
+        _write_row(
+            tbl,
+            method_name,
+            {"id": 2, "place": "seed2", "newcol": 123},
+            ["id"],
+            auto_create=False,
+        )
     assert "newcol" not in tbl.columns
 
-    # types=: an explicit type overrides the guessed one for a new column.
+
+@pytest.mark.parametrize(
+    "method_name",
+    ["insert", "insert_ignore", "insert_many", "update", "upsert", "upsert_many"],
+)
+def test_types_forwarding(db, method_name):
+    tbl = db[f"types_fwd_{method_name}"]
+    tbl.insert({"id": 1, "place": "seed"})
+
+    # types=: an explicit type overrides the guessed one for a new column
+    # (auto_create defaults on). id=3 is a fresh row so the always-INSERT
+    # methods don't collide with the id=1 seed.
     _write_row(
         tbl,
         method_name,
@@ -1129,6 +1147,26 @@ def test_ensure_false_and_types_forwarding(db, method_name):
     assert isinstance(tbl.table.c["typedcol"].type, TEXT)
 
 
+@pytest.mark.parametrize(
+    "method_name",
+    ["insert", "insert_ignore", "insert_many", "update", "upsert", "upsert_many"],
+)
+def test_types_with_auto_create_false_rejected(db, method_name):
+    # types= is inert with auto_create=False (nothing gets created for it);
+    # the dead combination is rejected rather than silently ignored.
+    tbl = db[f"types_dead_{method_name}"]
+    tbl.insert({"id": 1, "place": "seed"})
+    with pytest.raises(SchemaError, match="ineffective"):
+        _write_row(
+            tbl,
+            method_name,
+            {"id": 1, "place": "seed"},
+            ["id"],
+            auto_create=False,
+            types={"place": db.types.text},
+        )
+
+
 def test_ensure_creates_index(db):
     tbl = db["ensure_index_insert_ignore"]
     tbl.insert_ignore({"a": 1}, ["a"])
@@ -1136,7 +1174,7 @@ def test_ensure_creates_index(db):
 
     tbl_no_ensure = db["ensure_index_insert_ignore_off"]
     tbl_no_ensure.insert({"a": 1})
-    tbl_no_ensure.insert_ignore({"a": 2}, ["a"], ensure=False)
+    tbl_no_ensure.insert_ignore({"a": 2}, ["a"], auto_create=False)
     assert tbl_no_ensure.has_index(["a"]) is False
 
     tbl2 = db["ensure_index_upsert"]
@@ -1145,7 +1183,7 @@ def test_ensure_creates_index(db):
 
     tbl2_no_ensure = db["ensure_index_upsert_off"]
     tbl2_no_ensure.insert({"a": 1})
-    tbl2_no_ensure.upsert({"a": 2}, ["a"], ensure=False)
+    tbl2_no_ensure.upsert({"a": 2}, ["a"], auto_create=False)
     assert tbl2_no_ensure.has_index(["a"]) is False
 
 
@@ -1338,26 +1376,28 @@ def test_upsert_many_creates_index(db):
 
 
 def test_upsert_many_ensure_false_uses_existing_unique_index(db):
-    # ensure=False must not create an index — the caller supplies the unique
+    # auto_create=False must not create an index — the caller supplies the unique
     # arbiter themselves, and the upsert then rides on it.
     tbl = db["upsert_many_ensure_false_index"]
     tbl.insert({"a": 1, "v": "old"})
     tbl.create_index(["a"], unique=True)
     before = len(tbl.db.inspect.get_indexes(tbl.name))
-    tbl.upsert_many([{"a": 1, "v": "new"}, {"a": 2, "v": "x"}], ["a"], ensure=False)
+    tbl.upsert_many(
+        [{"a": 1, "v": "new"}, {"a": 2, "v": "x"}], ["a"], auto_create=False
+    )
     assert len(tbl.db.inspect.get_indexes(tbl.name)) == before
     assert len(tbl) == 2
     assert tbl.find_one(a=1)["v"] == "new"
 
 
 def test_upsert_many_ensure_false_needs_unique_index(db):
-    # With ensure=False no unique arbiter index is created, and the DB-native
+    # With auto_create=False no unique arbiter index is created, and the DB-native
     # upsert has nothing to conflict on: the backend raises its own error
     # (the old SELECT-then-classify path silently needed no index at all).
     tbl = db["upsert_many_ensure_false_no_index"]
     tbl.insert({"a": 1})
     with pytest.raises(SQLAlchemyError):
-        tbl.upsert_many([{"a": 2}], ["a"], ensure=False)
+        tbl.upsert_many([{"a": 2}], ["a"], auto_create=False)
 
 
 def test_upsert_many_none_key(db):
@@ -1761,11 +1801,13 @@ def test_create_column_existing_logs_debug(table, caplog):
     assert "Column exists" in caplog.text
 
 
-def test_sync_columns_ensure_false_and_explicit_types(db):
+def test_sync_columns_auto_create_false_and_explicit_types(db):
     tbl = db["sync_columns_test"]
     tbl.insert({"id": 1})
 
-    tbl.insert({"id": 2, "unknown": "x"}, ensure=False)
+    # auto_create=False + an unknown column is a loud SchemaError now.
+    with pytest.raises(SchemaError, match="unknown"):
+        tbl.insert({"id": 2, "unknown": "x"}, auto_create=False)
     assert "unknown" not in tbl.columns
 
     # For a brand-new column there's no established canonical casing yet,
