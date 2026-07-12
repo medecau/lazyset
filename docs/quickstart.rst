@@ -39,7 +39,10 @@ Storing data
 
 To store some data you need to get a reference to a table. You don't need
 to worry about whether the table already exists or not, since dataset
-will create it automatically::
+creates tables and columns on first write. (This can be turned off with
+``dataset.connect(auto_create=False)``, or per table via
+``db.table(name, must_exist=True)``, in which case writing to a missing
+table or column raises instead of creating it.)::
 
    # get a reference to the table 'user'
    table = db['user']
@@ -79,8 +82,8 @@ statement::
     with dataset.connect() as tx:
         tx['user'].insert(dict(name='John Doe', age=46, country='China'))
 
-You can get same functionality by invoking the methods :py:meth:`begin() <dataset.Table.begin>`,
-:py:meth:`commit() <dataset.Table.commit>` and :py:meth:`rollback() <dataset.Table.rollback>`
+You can get same functionality by invoking the methods :py:meth:`begin() <dataset.Database.begin>`,
+:py:meth:`commit() <dataset.Database.commit>` and :py:meth:`rollback() <dataset.Database.rollback>`
 explicitly::
 
     db = dataset.connect()
@@ -137,11 +140,12 @@ Using ``len()`` we can get the total number of rows in a table:
 Reading data from tables
 ------------------------
 
-Now let's get some real data out of the table::
+Now let's get some real data out of the table. Calling
+:py:meth:`find() <dataset.Table.find>` with no filter returns every row::
 
-   users = db['user'].all()
+   users = db['user'].find()
 
-If we simply want to iterate over all rows in a table, we can omit :py:meth:`all() <dataset.Table.all>`::
+To simply iterate over all rows in a table, iterate the table directly::
 
    for user in db['user']:
       print(user['age'])
@@ -173,17 +177,21 @@ with unique values in one or more columns::
    # Get one user per country
    db['user'].distinct('country')
 
-Finally, you can use the ``row_type`` parameter to choose the data type in which
-results will be returned::
+Finally, you can use the ``row_type`` parameter to choose the container in
+which rows are returned. It defaults to ``dict``; pass any callable that
+accepts the row's columns as keyword arguments and returns a mapping::
 
-    import dataset
-    from stuf import stuf
+    from collections import OrderedDict
 
-    db = dataset.connect('sqlite:///mydatabase.db', row_type=stuf)
+    db = dataset.connect('sqlite:///mydatabase.db', row_type=OrderedDict)
 
-Now contents will be returned in ``stuf`` objects (basically, ``dict``
-objects whose elements can be accessed as attributes (``item.name``) as well as
-by index (``item['name']``).
+For example, a small ``dict`` subclass that also exposes columns as attributes
+(``row.name`` as well as ``row['name']``) works as a ``row_type``::
+
+    class AttrDict(dict):
+        __getattr__ = dict.__getitem__
+
+    db = dataset.connect('sqlite:///mydatabase.db', row_type=AttrDict)
 
 Running custom SQL queries
 --------------------------
@@ -195,12 +203,12 @@ use the full power of SQL queries. Here's how you run them with ``dataset``::
    for row in result:
       print(row['country'], row['c'])
 
-The :py:meth:`query() <dataset.Table.query>` method can also be used to
+The :py:meth:`query() <dataset.Database.query>` method can also be used to
 access the underlying `SQLAlchemy core API <https://docs.sqlalchemy.org/en/21/orm/queryguide/query.html>`_, which allows for the
 programmatic construction of more complex queries::
 
    table = db['user'].table
-   statement = table.select(table.c.name.like('%John%'))
+   statement = table.select().where(table.c.name.like('%John%'))
    result = db.query(statement)
 
 Limitations of dataset
@@ -224,8 +232,12 @@ considered out of scope for the project, include:
 * Creating databases, or managing DBMS software.
 * Support for Python 2.x
 
+As of 3.0, :py:meth:`upsert() <dataset.Table.upsert>` and
+:py:meth:`insert_ignore() <dataset.Table.insert_ignore>` use database-native
+conflict handling (``ON CONFLICT`` / ``ON DUPLICATE KEY``) against a unique
+arbiter index.
+
 There's also some functionality that might be cool to support in the future, but
 that requires significant engineering:
 
 * Async operations
-* Database-native ``UPSERT`` semantics

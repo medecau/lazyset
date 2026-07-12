@@ -3,6 +3,70 @@
 *The changelog has only been started with version 0.3.12, previous
 changes must be reconstructed from revision history.*
 
+* **3.0.0**: Fork breakaway API redesign — *five self-describing verbs, one
+  honestly-named flag, loud errors where 2.x was silently wrong.* This is a
+  **hard fork of pudo/dataset**; breaking changes are sanctioned and there is
+  no compatibility shim. `import dataset` is unchanged.
+  - **Unified write verbs** *(breaking)*: `insert`, `insert_ignore`, `upsert`,
+    `update` and `delete` each take **one `Mapping` or any `Iterable` of
+    Mappings** (generators included), dispatched by shape via `@overload`;
+    `chunk_size` applies in iterable mode. `insert_many`, `update_many` and
+    `upsert_many` are **removed** — fold them into the singular verb.
+  - **Return values** *(breaking)*: single-row `insert`/`insert_ignore` return
+    the primary key or `None` (skipped / no PK) — no more `True` sentinel;
+    `upsert` returns `int` (rows submitted, single = 1); every iterable write
+    returns `int`.
+  - **Native `upsert`** *(breaking)*: one algorithm = `ON CONFLICT DO UPDATE`
+    (SQLite/PostgreSQL) / `ON DUPLICATE KEY UPDATE` (MySQL) against a required
+    unique-arbiter index named by `keys`. The 2.x UPDATE-rowcount-then-INSERT
+    path is gone — without an arbiter there is nothing to conflict on, so it no
+    longer "updates every non-unique match".
+  - **Native `insert_ignore`** *(breaking)*: `DO NOTHING` / ODKU-noop with a
+    UNIQUE arbiter created under `auto_create`; the COUNT-then-INSERT TOCTOU is
+    gone.
+  - **`ensure` → `auto_create`** *(breaking)*: renamed on every write, on
+    `connect(auto_create=…)` and `Database.auto_create`. `_sync_columns` is now
+    strict: with `auto_create=False`, unknown row keys raise `SchemaError`
+    naming them (2.x silently dropped the data), and a `types=` argument for a
+    column that won't be created is rejected as inert.
+  - **Exception taxonomy** *(breaking)*: added `SchemaError(DatasetError,
+    ValueError)` and `NoSuchColumnError(SchemaError)`. Missing filter/order
+    columns raise `NoSuchColumnError` (2.x matched nothing / skipped silently);
+    `normalize_*` failures raise `SchemaError`; closed-database / no-engine
+    access raises `DatasetError` (was `RuntimeError`).
+  - **Reserved read-modifiers** *(breaking)*: `order_by` → `_order_by` (all
+    modifiers are now leading-underscore, killing column-name shadowing);
+    `_step` disables chunking only on `None` (dropped the `False`/`0` coercion).
+    A shared validator rejects an unknown or misplaced leading-underscore kwarg
+    with `QueryError` across `find`/`find_one`/`count`/`delete`/`distinct`, which
+    also gain a `where=` mapping escape hatch. `find_one` gains `_offset`; the
+    `Table.all` alias is removed.
+  - **Result iterator** *(breaking)*: `ResultIter` → `Results` (a context
+    manager; dropped the `next` alias); `OutRow` → `Row`; removed the inert
+    `row_factory` module global; the default row container is `dict`
+    (was `OrderedDict`).
+  - **`chunked.py` removed** *(breaking)*: `ChunkedInsert` / `ChunkedUpdate` /
+    `_Chunker` / `InvalidCallbackError` are gone — use `insert(gen,
+    chunk_size=N)` / `update(gen, keys, chunk_size=N)`; a pre-flush `callback`
+    migrates to a transforming generator wrapping the input.
+  - **Database accessor collapse** *(breaking)*: `create_table` / `get_table` /
+    `load_table` / `has_table` are replaced by one `db.table(name, *,
+    must_exist=False, primary_id, primary_type, primary_increment)`, with
+    `db[name]` as shorthand. It raises `SchemaError` on a conflicting
+    `primary_id` (vs a cached handle or an existing table's key) and on
+    `must_exist=True` for a missing table, instead of silently ignoring the
+    request. `executable` / `op` / `inspect` / `metadata` are privatized
+    (`_`-prefixed); `on_connect_statements` is defensively copied.
+  - **`db.query`**: gains a `params` mapping (for bind names that can't be
+    keyword arguments) and a keyword-only `_step`.
+  - **`create_index`**: a caller-supplied `mysql_length` is merged into the
+    auto-computed prefix lengths instead of clobbering them.
+  - **`drop_column`**: attempted on every backend — SQLite ≥ 3.35 succeeds — with
+    no preemptive dialect raise; a missing engine raises `DatasetError`.
+  - **Exports**: `__all__` now includes `SchemaError`, `NoSuchColumnError`,
+    `Results`, `Row`, `RowFactory`, `WriteRow`, `SQLValue`, `FilterValue`;
+    dropped `OutRow` and `row_factory`.
+
 * **2.0.0**: Major modernization and type annotations
   - **Type annotations**: Full `mypy --strict` compliance across all modules
   - **PEP 561**: Added `py.typed` marker for downstream type checking

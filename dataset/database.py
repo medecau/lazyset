@@ -239,7 +239,7 @@ class Database:
                 conn.close()
             self.connections.clear()
             # Dispose and null the engine under the same lock so a concurrent
-            # executable()/create_table() can't slip in and build a connection
+            # _executable()/table() can't slip in and build a connection
             # on a half-torn-down engine (orphaned connection).
             if self.engine is not None:
                 self.engine.dispose()

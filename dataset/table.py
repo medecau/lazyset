@@ -55,7 +55,7 @@ class Table:
     _RESERVED_KWARGS = frozenset(
         {"_limit", "_offset", "_order_by", "_step", "_streamed"}
     )
-    # The OR-of-AND existence check (update_many's non-sane-multi-rowcount
+    # The OR-of-AND existence check (update's non-sane-multi-rowcount
     # fallback) builds one clause per distinct key; SQLite's default
     # expression-tree depth limit is 1000, so it is sub-batched at this size
     # independently of the caller's chunk_size.
@@ -1139,8 +1139,9 @@ class Table:
 
             table.create_column('created_at', db.types.datetime)
 
-        `type` corresponds to an SQLAlchemy type as described by
-        `dataset.db.Types`. Additional keyword arguments are passed
+        `type` corresponds to an SQLAlchemy type, most easily referenced
+        through ``db.types`` (see :py:class:`Types <dataset.types.Types>`).
+        Additional keyword arguments are passed
         to the constructor of `Column`, so that default values, and
         options like `nullable` and `unique` can be set.
         ::

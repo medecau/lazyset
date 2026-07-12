@@ -49,8 +49,9 @@ Features
   exist in the database, it will be created automatically.
 * **Upserts**: Records are either created or updated, depending on
   whether an existing version can be found.
-* **Query helpers** for simple queries such as :py:meth:`all <dataset.Table.all>` rows in a table or
-  all :py:meth:`distinct <dataset.Table.distinct>` values across a set of columns.
+* **Query helpers** for simple queries such as :py:meth:`find <dataset.Table.find>` to
+  select rows in a table or :py:meth:`distinct <dataset.Table.distinct>` values
+  across a set of columns.
 * **Compatibility**: Being built on top of `SQLAlchemy <https://www.sqlalchemy.org/>`_, ``dataset`` works with all major databases, such as SQLite, PostgreSQL and MySQL.
 
 Contents

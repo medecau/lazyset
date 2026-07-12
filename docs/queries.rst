@@ -42,17 +42,25 @@ startswith     String starts with
 endswith       String ends with
 ============== ============================================================
 
-An unrecognized operator name raises ``dataset.util.QueryError`` rather
-than silently matching nothing.
+An unrecognized operator name raises :py:class:`QueryError <dataset.QueryError>`
+rather than silently matching nothing.
 
-Querying for a specific value on a column that does not exist on the table
-will return no results.
+Filtering on a column that does not exist on the table raises
+:py:class:`NoSuchColumnError <dataset.NoSuchColumnError>` (in 2.x this silently
+matched no rows).
 
-``order_by``, ``_limit``, ``_offset``, ``_step`` and ``_streamed`` are
-reserved keyword arguments on :py:meth:`table.find() <dataset.Table.find>`.
-A column literally named one of these can't be passed as an equality
-filter through keyword arguments; use a positional SQLAlchemy core
-expression instead (see below).
+``_order_by``, ``_limit``, ``_offset``, ``_step`` and ``_streamed`` are
+reserved keyword arguments on :py:meth:`table.find() <dataset.Table.find>` —
+all leading-underscore, so they never collide with a column filter. A column
+whose name is not a valid keyword argument, or that would clash with a reserved
+modifier, can still be filtered through the ``where=`` mapping (or a positional
+SQLAlchemy core expression, see below)::
+
+    # filter a column literally named "_limit"
+    results = table.find(where={'_limit': 5})
+
+    # order by a real column named "created" (modifiers take column names)
+    results = table.find(status='open', _order_by='created')
 
 You can also pass `SQLAlchemy core expressions`_ directly into the
 :py:meth:`table.find() <dataset.Table.find>` method as positional arguments.
@@ -91,6 +99,10 @@ SQL injections::
 
     # With parameter binding:
     results = db.query('SELECT * FROM users WHERE age > :min_age', min_age=21)
+
+    # For bind names that aren't valid keyword arguments (reserved words, or
+    # names colliding with ``params``/``_step``), pass a ``params`` mapping:
+    results = db.query('SELECT * FROM users WHERE country = :from', {'from': 'US'})
 
 For fully programmatic, composable query building, consider using
 `SQLAlchemy core expressions`_ directly.
