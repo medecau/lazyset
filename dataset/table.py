@@ -287,53 +287,168 @@ class Table:
         self.db._auto_commit()
         return len(chunk)
 
+    @overload
     def insert_ignore(
         self,
-        row: WriteRow,
+        rows: WriteRow,
         keys: Sequence[str],
         auto_create: bool | None = None,
         types: dict[str, ColumnType] | None = None,
+        chunk_size: int = 1000,
+    ) -> Any: ...
+
+    @overload
+    def insert_ignore(
+        self,
+        rows: Iterable[WriteRow],
+        keys: Sequence[str],
+        auto_create: bool | None = None,
+        types: dict[str, ColumnType] | None = None,
+        chunk_size: int = 1000,
+    ) -> int: ...
+
+    def insert_ignore(
+        self,
+        rows: WriteRow | Iterable[WriteRow],
+        keys: Sequence[str],
+        auto_create: bool | None = None,
+        types: dict[str, ColumnType] | None = None,
+        chunk_size: int = 1000,
     ) -> Any:
-        """Add a ``row`` dict into the table if the row does not exist.
+        """Insert one row **or** an iterable of rows, skipping existing ones.
 
-        If rows with matching ``keys`` exist no change is made.
-
-        Setting ``auto_create`` results in automatically creating missing columns,
-        i.e., keys of the row are not table columns.
-
-        During column creation, ``types`` will be checked for a key
-        matching the name of a column to be created, and the given
-        SQLAlchemy column type will be used. Otherwise, the type is
-        guessed from the row value, defaulting to a simple unicode
-        field.
-
-        With ``auto_create`` on (the default), an index on ``keys`` is created
-        as a side effect. Pass ``auto_create=False`` if you don't want that,
-        e.g. on a locked-down or very large table.
+        A row whose ``keys`` values already exist is left untouched — the
+        database decides existence natively via ``INSERT ... ON CONFLICT DO
+        NOTHING`` (SQLite/PostgreSQL) or a no-op ``ON DUPLICATE KEY UPDATE``
+        (MySQL). ``keys`` is required: it names the conflict arbiter.
         ::
 
-            data = dict(id=10, title='I am a banana!')
-            table.insert_ignore(data, ['id'])
+            table.insert_ignore(dict(id=10, title='I am a banana!'), ['id'])
+
+        With ``auto_create`` on (the default) a UNIQUE index on exactly
+        ``keys`` is created as the arbiter — a no-op when a matching unique
+        index or primary key already exists. It raises
+        :py:class:`SchemaError <dataset.SchemaError>` if the table already
+        holds rows with duplicate ``keys`` values. With ``auto_create=False``
+        that unique index (or primary key) must already exist, or the database
+        raises.
+
+        A single ``Mapping`` returns the inserted row's primary key, or
+        ``None`` if the row already existed (was skipped) or the table has no
+        primary key. Any other iterable returns the number of rows submitted.
         """
-        row = self._sync_columns(row, auto_create, types=types)
+        keys = ensure_strings(keys)
+        if not keys:
+            raise SchemaError(
+                "insert_ignore() requires at least one key column as the "
+                "conflict arbiter."
+            )
+        if isinstance(rows, Mapping):
+            return self._insert_ignore_one(rows, keys, auto_create, types)
+        return self._insert_ignore_rows(rows, keys, chunk_size, auto_create, types)
+
+    def _make_arbiter(self, keys: Sequence[str], auto_create: bool | None) -> list[str]:
+        """Validate the key columns and create the UNIQUE arbiter index.
+
+        Columns must already be synced. Returns the normalized key names.
+        Shared by the native insert_ignore and upsert paths.
+        """
+        norm_keys = [self._get_column_name(k) for k in keys]
+        for k in norm_keys:
+            if not self.has_column(k):
+                raise NoSuchColumnError(f"No such column: {k}")
         if self._check_auto_create(auto_create):
-            self.create_index(keys)
-        args, _ = self._keys_to_args(row, keys)
-        # Route through where= (not **args): a key column literally named like
-        # a reserved modifier or starting with "_" must not trip the kwarg
-        # validator on this internal existence check.
-        if self.count(where=args) == 0:
-            # row was already synced above; avoid insert()'s own redundant
-            # _sync_columns pass by writing directly.
-            res = self.db.executable.execute(self.table.insert().values(row))
-            self.db._auto_commit()
-            if (
-                res.inserted_primary_key is not None
-                and len(res.inserted_primary_key) > 0
-            ):
-                return res.inserted_primary_key[0]
-            return True
-        return False
+            self.create_index(norm_keys, unique=True)
+        return norm_keys
+
+    def _ignore_stmt(
+        self, norm_keys: Sequence[str], values: MutableRow | None = None
+    ) -> Insert:
+        """Build a dialect-native "insert, or do nothing on conflict" stmt.
+
+        Without ``values`` the statement is reused across column groups under
+        executemany (columns are inferred per execute); with ``values`` it is
+        a single-row insert whose primary key can be read back.
+        """
+        if self.db.is_mysql:
+            stmt = mysql_insert(self.table)
+            if values is not None:
+                stmt = stmt.values(values)
+            # MySQL has no DO NOTHING; assign a key to its own proposed value,
+            # a no-op on a duplicate key.
+            k0 = norm_keys[0]
+            return stmt.on_duplicate_key_update(**{k0: stmt.inserted[k0]})
+        ins = sqlite_insert(self.table) if self.db.is_sqlite else pg_insert(self.table)
+        if values is not None:
+            ins = ins.values(values)
+        return ins.on_conflict_do_nothing(index_elements=list(norm_keys))
+
+    def _insert_ignore_one(
+        self,
+        row: WriteRow,
+        keys: Sequence[str],
+        auto_create: bool | None,
+        types: dict[str, ColumnType] | None,
+    ) -> Any:
+        synced = self._sync_columns(row, auto_create, types=types)
+        norm_keys = self._make_arbiter(keys, auto_create)
+        res = self.db.executable.execute(self._ignore_stmt(norm_keys, values=synced))
+        self.db._auto_commit()
+        # Gate on rowcount: only a genuine insert (not a skipped conflict) has
+        # a primary key to report; the ODKU-noop path's PK is driver-dependent.
+        if (
+            res.rowcount == 1
+            and res.inserted_primary_key is not None
+            and len(res.inserted_primary_key) > 0
+        ):
+            return res.inserted_primary_key[0]
+        return None
+
+    def _insert_ignore_rows(
+        self,
+        rows: Iterable[WriteRow],
+        keys: Sequence[str],
+        chunk_size: int,
+        auto_create: bool | None,
+        types: dict[str, ColumnType] | None,
+    ) -> int:
+        processed = 0
+        chunk: list[MutableRow] = []
+        for row in rows:
+            chunk.append(dict(row))
+            if len(chunk) >= chunk_size:
+                processed += self._flush_ignore_chunk(chunk, keys, auto_create, types)
+                chunk = []
+        if chunk:
+            processed += self._flush_ignore_chunk(chunk, keys, auto_create, types)
+        return processed
+
+    def _flush_ignore_chunk(
+        self,
+        chunk: list[MutableRow],
+        keys: Sequence[str],
+        auto_create: bool | None,
+        types: dict[str, ColumnType] | None,
+    ) -> int:
+        sync_row: MutableRow = {}
+        for row in chunk:
+            for k in row:
+                if k not in sync_row:
+                    sync_row[k] = row[k]
+        self._sync_columns(sync_row, auto_create, types=types)
+        norm_keys = self._make_arbiter(keys, auto_create)
+        # One DO-NOTHING statement serves every column group (its columns are
+        # inferred per execute); group only so executemany sees a uniform key
+        # set, leaving an omitted column to its server default.
+        stmt = self._ignore_stmt(norm_keys)
+        groups: dict[frozenset[str], list[MutableRow]] = {}
+        for row in chunk:
+            norm = {self._get_column_name(k): v for k, v in row.items()}
+            groups.setdefault(frozenset(norm), []).append(norm)
+        for group_rows in groups.values():
+            self.db.executable.execute(stmt, group_rows)
+        self.db._auto_commit()
+        return len(chunk)
 
     def update(
         self,
@@ -534,31 +649,105 @@ class Table:
 
     def upsert(
         self,
-        row: WriteRow,
+        rows: WriteRow | Iterable[WriteRow],
         keys: Sequence[str],
         auto_create: bool | None = None,
         types: dict[str, ColumnType] | None = None,
-    ) -> Any:
-        """An UPSERT is a smart combination of insert and update.
+        chunk_size: int = 1000,
+    ) -> int:
+        """Insert-or-update one row **or** an iterable of rows (native UPSERT).
 
-        If rows with matching ``keys`` exist they will be updated, otherwise a
-        new row is inserted in the table.
-
-        With ``auto_create`` on (the default), an index on ``keys`` is created
-        as a side effect. Pass ``auto_create=False`` if you don't want that,
-        e.g. on a locked-down or very large table.
+        Each chunk is written with a single ``INSERT ... ON CONFLICT DO
+        UPDATE`` (SQLite/PostgreSQL) or ``ON DUPLICATE KEY UPDATE`` (MySQL)
+        per column group: the database decides row existence by SQL equality
+        on ``keys``, atomically per statement. ``keys`` is required — it names
+        the conflict arbiter — and a genuine unique index (or primary key) on
+        exactly ``keys`` is what the upsert conflicts on.
         ::
 
-            data = dict(id=10, title='I am a banana!')
-            table.upsert(data, ['id'])
+            table.upsert(dict(id=10, title='I am a banana!'), ['id'])
+            table.upsert([dict(id=1, n=1), dict(id=2, n=2)], ['id'])
+
+        With ``auto_create`` on (the default) that UNIQUE arbiter index is
+        created for you (a no-op when a matching one exists), raising
+        :py:class:`SchemaError <dataset.SchemaError>` if the table already
+        holds rows with duplicate ``keys`` values. With ``auto_create=False``
+        the arbiter must already exist, or the database raises.
+
+        Unlike the pre-3.0 UPDATE-then-INSERT upsert, this does **not** update
+        every non-unique match: without a unique arbiter there is nothing to
+        conflict on. Backend-decided semantics: ``None``-valued keys always
+        insert (NULLs are distinct); on MySQL the upsert fires on *any* unique
+        key and its default collation treats ``'A'``/``'a'`` as duplicates; on
+        PostgreSQL a key repeated *within* one chunk raises ("cannot affect
+        row a second time") — deduplicate or lower ``chunk_size``.
+
+        Returns the number of rows submitted (single row = 1); the DB resolves
+        the insert/update split, which executemany does not report.
         """
-        row = self._sync_columns(row, auto_create, types=types)
-        if self._check_auto_create(auto_create):
-            self.create_index(keys)
-        row_count = self.update(row, keys, auto_create=False)
-        if row_count == 0:
-            return self.insert(row, auto_create=False)
-        return True
+        keys = ensure_strings(keys)
+        if not keys:
+            raise SchemaError(
+                "upsert() requires at least one key column as the conflict arbiter."
+            )
+        if isinstance(rows, Mapping):
+            return self._upsert_rows([rows], keys, chunk_size, auto_create, types)
+        return self._upsert_rows(rows, keys, chunk_size, auto_create, types)
+
+    def _upsert_rows(
+        self,
+        rows: Iterable[WriteRow],
+        keys: Sequence[str],
+        chunk_size: int,
+        auto_create: bool | None,
+        types: dict[str, ColumnType] | None,
+    ) -> int:
+        # One compiled statement per column set, cached across chunks.
+        stmts: dict[frozenset[str], Insert] = {}
+        processed = 0
+        chunk: list[MutableRow] = []
+        for row in rows:
+            chunk.append(dict(row))
+            if len(chunk) >= chunk_size:
+                processed += self._flush_upsert_chunk(
+                    chunk, keys, auto_create, types, stmts
+                )
+                chunk = []
+        if chunk:
+            processed += self._flush_upsert_chunk(
+                chunk, keys, auto_create, types, stmts
+            )
+        return processed
+
+    def _flush_upsert_chunk(
+        self,
+        chunk: list[MutableRow],
+        keys: Sequence[str],
+        auto_create: bool | None,
+        types: dict[str, ColumnType] | None,
+        stmts: dict[frozenset[str], Insert],
+    ) -> int:
+        sync_row: MutableRow = {}
+        for row in chunk:
+            for k in row:
+                if k not in sync_row:
+                    sync_row[k] = row[k]
+        self._sync_columns(sync_row, auto_create, types=types)
+        norm_keys = self._make_arbiter(keys, auto_create)
+        # Group by the exact column set: an omitted column is left out of its
+        # group's INSERT and SET, so the DB applies its default on insert and
+        # leaves the column untouched on update.
+        groups: dict[frozenset[str], list[MutableRow]] = {}
+        for row in chunk:
+            norm = {self._get_column_name(k): v for k, v in row.items()}
+            groups.setdefault(frozenset(norm), []).append(norm)
+        for group_cols, group_rows in groups.items():
+            stmt = stmts.get(group_cols)
+            if stmt is None:
+                stmt = stmts[group_cols] = self._upsert_stmt(group_cols, norm_keys)
+            self.db.executable.execute(stmt, group_rows)
+        self.db._auto_commit()
+        return len(chunk)
 
     def _upsert_stmt(
         self, group_cols: frozenset[str], norm_keys: Sequence[str]
@@ -569,7 +758,7 @@ class Table:
         ``inserted``), so a single statement serves every row in the group
         under executemany. Unknown columns (possible with ``auto_create=False``)
         are left out of the SET; the extra parameter keys are ignored at
-        execute time, matching insert_many.
+        execute time, matching insert().
         """
         non_key = sorted(
             c for c in group_cols if c not in norm_keys and self.has_column(c)
@@ -591,89 +780,6 @@ class Table:
                 set_={c: stmt.excluded[c] for c in non_key},
             )
         return stmt.on_conflict_do_nothing(index_elements=list(norm_keys))
-
-    def upsert_many(
-        self,
-        rows: Sequence[WriteRow],
-        keys: Sequence[str],
-        chunk_size: int = 1000,
-        auto_create: bool | None = None,
-        types: dict[str, ColumnType] | None = None,
-    ) -> int:
-        """Insert-or-update many rows at a time using a DB-native UPSERT.
-
-        Each chunk is written with a single ``INSERT ... ON CONFLICT DO
-        UPDATE`` (SQLite/PostgreSQL) or ``ON DUPLICATE KEY UPDATE`` (MySQL)
-        per column group: the database decides row existence by SQL equality
-        on ``keys``, atomically per statement.
-
-        With ``auto_create`` on (the default), a UNIQUE index on ``keys`` is
-        created as a side effect — the conflict arbiter the native upsert
-        requires. This raises :py:class:`DatasetError <dataset.DatasetError>`
-        if the table already contains rows with duplicate values for
-        ``keys``. With ``auto_create=False`` a unique index or primary key on
-        exactly ``keys`` must already exist, or the database raises its own
-        error.
-
-        Notes on SQL semantics (all backend-decided): ``None``-valued keys
-        always insert (NULLs are distinct in a unique index); on MySQL the
-        upsert fires on *any* unique key of the table, and its default
-        collation treats ``'A'``/``'a'`` as duplicates; on PostgreSQL a key
-        repeated *within* one chunk raises ("cannot affect row a second
-        time") — deduplicate beforehand or lower ``chunk_size``.
-
-        See :py:meth:`insert_many() <dataset.Table.insert_many>` for details
-        on the other parameters.
-
-        Returns the number of input rows processed (the insert/update split
-        is not reported by executemany on any backend).
-        """
-        keys = ensure_strings(keys)
-
-        # Sync table once up front: column creation is call-wide, so union
-        # every row's keys for the _sync_columns pass (mirrors insert_many).
-        sync_row: MutableRow = {}
-        for row in rows:
-            for key in row:
-                if key not in sync_row:
-                    sync_row[key] = row[key]
-        self._sync_columns(sync_row, auto_create, types=types)
-
-        # Normalize key names now that the columns exist, so a
-        # case-mismatched key (e.g. ['ID'] against an 'id' column) resolves
-        # to the real column name used by the arbiter index and statement.
-        norm_keys = [self._get_column_name(k) for k in keys]
-
-        if self._check_auto_create(auto_create):
-            self.create_index(norm_keys, unique=True)
-
-        # One compiled statement per column set, cached across chunks.
-        stmts: dict[frozenset[str], Insert] = {}
-        processed = 0
-        chunk: list[MutableRow] = []
-        for index, row in enumerate(rows):
-            chunk.append({self._get_column_name(k): v for k, v in row.items()})
-
-            # Upsert when chunk_size is fulfilled or this is the last row
-            if len(chunk) == chunk_size or index == len(rows) - 1:
-                # Group by the exact column set (like insert_many): an
-                # omitted column is left out of its group's INSERT and SET,
-                # so the DB applies its default on insert and leaves the
-                # column untouched on update.
-                groups: dict[frozenset[str], list[MutableRow]] = {}
-                for chunk_row in chunk:
-                    groups.setdefault(frozenset(chunk_row), []).append(chunk_row)
-                for group_cols, group_rows in groups.items():
-                    stmt = stmts.get(group_cols)
-                    if stmt is None:
-                        stmt = stmts[group_cols] = self._upsert_stmt(
-                            group_cols, norm_keys
-                        )
-                    self.db.executable.execute(stmt, group_rows)
-                self.db._auto_commit()
-                processed += len(chunk)
-                chunk = []
-        return processed
 
     def delete(
         self,

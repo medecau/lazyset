@@ -41,40 +41,38 @@ def test_insert(table):
     assert table.find_one(id=last_id)["place"] == "Berlin"
 
 
-def test_insert_ignore(table):
-    table.insert_ignore(
-        {"date": datetime(2011, 1, 2), "temperature": -10, "place": "Berlin"},
-        ["place"],
-    )
-    assert len(table) == len(TEST_DATA) + 1, len(table)
-    table.insert_ignore(
-        {"date": datetime(2011, 1, 2), "temperature": -10, "place": "Berlin"},
-        ["place"],
-    )
-    assert len(table) == len(TEST_DATA) + 1, len(table)
+def test_insert_ignore(db):
+    # A native DO NOTHING needs a unique arbiter on the key, so use a table
+    # where ``place`` is genuinely unique (the weather fixture repeats it).
+    tbl = db["insert_ignore_basic"]
+    row = {"date": datetime(2011, 1, 2), "temperature": -10, "place": "Berlin"}
+    tbl.insert_ignore(row, ["place"])
+    assert len(tbl) == 1, len(tbl)
+    tbl.insert_ignore(row, ["place"])  # duplicate place -> skipped
+    assert len(tbl) == 1, len(tbl)
 
 
-def test_insert_ignore_single_sync_columns_pass(table):
-    # insert_ignore already ran _sync_columns on the row; delegating to
-    # insert(row, auto_create=False) redundantly re-ran it. has_column() is
-    # called once per row column inside _sync_columns, so a non-key column
-    # (not touched by create_index/count's own has_column calls) must be
-    # checked exactly once, not twice.
-    original_has_column = table.has_column
+def test_insert_ignore_single_sync_columns_pass(db):
+    # The native insert_ignore runs _sync_columns exactly once (no delegating
+    # to insert() that re-syncs). has_column() is called once per non-key row
+    # column inside that single pass.
+    tbl = db["insert_ignore_sync_pass"]
+    tbl.insert({"place": "seed", "date": datetime(2011, 1, 1), "temperature": 0})
+    original_has_column = tbl.has_column
     calls = []
 
     def spy(column):
         calls.append(column)
         return original_has_column(column)
 
-    table.has_column = spy
+    tbl.has_column = spy
     try:
-        table.insert_ignore(
+        tbl.insert_ignore(
             {"date": datetime(2011, 1, 5), "temperature": 3, "place": "NewPlace"},
             ["place"],
         )
     finally:
-        del table.has_column
+        del tbl.has_column
 
     assert calls.count("date") == 1, calls
     assert calls.count("temperature") == 1, calls
@@ -135,17 +133,22 @@ def test_insert_json(table):
     assert stored["info"] == info, stored["info"]
 
 
-def test_upsert(table):
-    table.upsert(
+def test_upsert(db):
+    # Native upsert conflicts on a unique arbiter, so use a table where the
+    # key is genuinely unique (the weather fixture repeats ``place``).
+    tbl = db["upsert_basic"]
+    tbl.upsert(
         {"date": datetime(2011, 1, 2), "temperature": -10, "place": "Berlin"},
         ["place"],
     )
-    assert len(table) == len(TEST_DATA) + 1, len(table)
-    table.upsert(
-        {"date": datetime(2011, 1, 2), "temperature": -10, "place": "Berlin"},
+    assert len(tbl) == 1, len(tbl)
+    # Second upsert on the same place updates in place (DO UPDATE), not insert.
+    tbl.upsert(
+        {"date": datetime(2011, 1, 3), "temperature": -5, "place": "Berlin"},
         ["place"],
     )
-    assert len(table) == len(TEST_DATA) + 1, len(table)
+    assert len(tbl) == 1, len(tbl)
+    assert tbl.find_one(place="Berlin")["temperature"] == -5
 
 
 def test_upsert_single_column(db):
@@ -183,44 +186,31 @@ def test_write_method_return_values(db, table):
     no_pk_table = db.create_table("no_pk_writes", primary_id=False)
     assert no_pk_table.insert({"a": 1}) is None
 
-    # insert_ignore() on a matching existing row returns False.
-    assert (
-        table.insert_ignore(
-            {"date": datetime(2011, 1, 1), "temperature": 6, "place": TEST_CITY_1},
-            ["place"],
-        )
-        is False
-    )
-
     # insert_ignore() on a genuinely new row returns the inserted primary key.
-    new_pk = table.insert_ignore(
-        {"date": datetime(2011, 1, 6), "temperature": 2, "place": "NewCity"},
-        ["place"],
-    )
-    assert new_pk == len(TEST_DATA) + 2
+    ig = db["ig_returns"]
+    assert ig.insert_ignore({"place": "NewCity", "n": 1}, ["place"]) == 1
+    # insert_ignore() on a matching existing row returns None (skipped).
+    assert ig.insert_ignore({"place": "NewCity", "n": 2}, ["place"]) is None
 
-    # No primary key column: insert_ignore() also returns True for a new row.
-    assert no_pk_table.insert_ignore({"a": 2}, ["a"]) is True
+    # No primary key column: insert_ignore() returns None even for a new row.
+    assert no_pk_table.insert_ignore({"a": 2}, ["a"]) is None
 
-    # upsert() that matches and updates existing row(s) returns True.
-    assert (
-        table.upsert(
-            {"date": datetime(2011, 1, 1), "temperature": 99, "place": TEST_CITY_1},
-            ["place"],
-        )
-        is True
-    )
+    # upsert() returns the number of rows submitted (single row = 1), for both
+    # the insert branch and the update branch.
+    up = db["up_returns"]
+    assert up.upsert({"place": "Berlin", "n": 1}, ["place"]) == 1
+    assert up.upsert({"place": "Berlin", "n": 2}, ["place"]) == 1
 
     # delete() on a table that was never created returns 0 without erroring.
     missing = db.load_table("truly_missing_delete_target")
     assert missing.delete() == 0
 
 
-def test_upsert_many_keys_targeting(db):
+def test_upsert_keys_targeting(db):
     # An empty keys list would match *every* existing row instead of just
     # the intended one, turning every upsert after the first into an update.
     tbl = db["upsert_many_targeting"]
-    tbl.upsert_many([{"id": 1}, {"id": 2}], "id")
+    tbl.upsert([{"id": 1}, {"id": 2}], "id")
     assert len(tbl) == 2
 
 
@@ -744,13 +734,13 @@ def test_update_generator_streamed(db):
     assert tbl.find_one(id=3)["n"] == 30
 
 
-def test_insert_many_returns_count(db):
+def test_insert_returns_count(db):
     tbl = db["insert_many_returns_count"]
     result = tbl.insert([{"n": i} for i in range(5)], chunk_size=2)
     assert result == 5
 
 
-def test_insert_many_chunk_size_flush(db):
+def test_insert_chunk_size_flush(db):
     tbl = db["insert_many_chunk_flush"]
     tbl.insert({"n": 0})  # pre-create the "n" column so the sync step is a no-op
     tbl.delete()
@@ -775,7 +765,7 @@ def test_insert_many_chunk_size_flush(db):
     assert len(tbl) == 4
 
 
-def test_insert_many_case_insensitive_column(db):
+def test_insert_case_insensitive_column(db):
     # A case-mismatched key ('NAME' against a 'name' column) must be
     # normalized to the real column name, like update_many/upsert_many do —
     # not silently stored as NULL because the executemany param went unused.
@@ -786,7 +776,7 @@ def test_insert_many_case_insensitive_column(db):
     assert len(rows) == 1, rows
 
 
-def test_insert_many_preserves_server_default(db):
+def test_insert_preserves_server_default(db):
     # A column omitted from a given row must fall back to its DB default,
     # matching insert(). The old pad-to-union step bound an explicit NULL,
     # overriding the server_default.
@@ -925,7 +915,7 @@ def test_update_iterable(db):
     assert tbl.find_one(id=1)["temp"] == tbl.find_one(id=3)["temp"]
 
 
-def test_update_many_heterogeneous_columns(db):
+def test_update_heterogeneous_columns(db):
     tbl = db["update_many_hetero"]
     tbl.insert([{"id": 1, "x": "x1", "y": "y1"}, {"id": 2, "x": "x2", "y": "y2"}])
 
@@ -942,7 +932,7 @@ def test_update_many_heterogeneous_columns(db):
     assert row2["y"] == "y2-new"
 
 
-def test_update_many_heterogeneous_columns_across_chunks(db):
+def test_update_heterogeneous_columns_across_chunks(db):
     tbl = db["update_many_hetero_chunks"]
     tbl.insert([{"id": 1, "x": "x1", "y": "y1"}, {"id": 2, "x": "x2", "y": "y2"}])
 
@@ -958,7 +948,7 @@ def test_update_many_heterogeneous_columns_across_chunks(db):
     assert row2["y"] == "y2-new"
 
 
-def test_update_many_auto_creates_columns(db):
+def test_update_auto_creates_columns(db):
     # update_many never called _sync_columns, so its auto_create/types params
     # were dead and a new value column raised a raw CompileError. With
     # auto_create defaulting on, the column must be created before the UPDATE.
@@ -969,7 +959,7 @@ def test_update_many_auto_creates_columns(db):
     assert tbl.find_one(id=1)["note"] == "hello"
 
 
-def test_update_many_on_deferred_table_raises(db):
+def test_update_on_deferred_table_raises(db):
     # primary_id=False with no columns defers creation; an empty update row
     # gives it no column to create it with. update_many now routes through the
     # same _sync_columns choke point as insert()/update(), so this raises a
@@ -984,14 +974,14 @@ def test_update_many_on_deferred_table_raises(db):
         tbl.update([{}], ["id"])
 
 
-def test_update_many_missing_key_column_raises(db):
+def test_update_missing_key_column_raises(db):
     tbl = db["update_many_missing_key"]
     tbl.insert([{"id": 1, "n": 1}])
     with pytest.raises(DatasetError, match=r"^Row is missing key column: 'id'$"):
         tbl.update([{"n": 2}], "id")
 
 
-def test_update_many_value_column_named_like_key(db):
+def test_update_value_column_named_like_key(db):
     # A value column literally named like the WHERE bindparam ('_id') used to
     # collide with the key bind: the rename overwrote it and WHERE/SET shared
     # the bind, so the column was set to the key value instead of its own.
@@ -1002,7 +992,7 @@ def test_update_many_value_column_named_like_key(db):
     assert tbl.find_one(id=2)["_id"] == "keep-me-2"
 
 
-def test_update_many_case_insensitive_key(db):
+def test_update_case_insensitive_key(db):
     # A case-mismatched key (['ID'] against an 'id' column) must resolve and
     # update the row, not KeyError on the exact-match column collection.
     tbl = db["update_many_case_key"]
@@ -1012,7 +1002,7 @@ def test_update_many_case_insensitive_key(db):
     assert tbl.find_one(id=2)["n"] == 2
 
 
-def test_update_many_key_only_rows(db):
+def test_update_key_only_rows(db):
     # A row carrying only key columns has nothing to SET; mirroring
     # update()'s `if not len(row)` case it must count the matched keys
     # instead of compiling an invalid empty UPDATE.
@@ -1026,7 +1016,7 @@ def test_update_many_key_only_rows(db):
     assert tbl.update([{"id": 99}], "id") == 0
 
 
-def test_update_many_chunk_size_flush(db):
+def test_update_chunk_size_flush(db):
     tbl = db["update_many_chunk_flush"]
     tbl.insert([{"id": 1, "n": 1}, {"id": 2, "n": 2}])
     # chunk_size=1 forces a flush after every row, not just at the end.
@@ -1035,14 +1025,14 @@ def test_update_many_chunk_size_flush(db):
     assert tbl.find_one(id=2)["n"] == 20
 
 
-def test_update_many_returns_count(db):
+def test_update_returns_count(db):
     tbl = db["update_many_returns_count"]
     tbl.insert([{"id": 1, "n": 1}, {"id": 2, "n": 2}, {"id": 3, "n": 3}])
     result = tbl.update([{"id": 1, "n": 10}, {"id": 2, "n": 20}], "id")
     assert result == 2
 
 
-def test_update_many_returns_count_across_column_groups(db):
+def test_update_returns_count_across_column_groups(db):
     # Two rows with different value-column sets land in separate groups
     # within the same flush; the returned count must sum across all of
     # them, not just the last group executed.
@@ -1052,7 +1042,7 @@ def test_update_many_returns_count_across_column_groups(db):
     assert result == 2
 
 
-def test_update_many_returns_count_without_sane_multi_rowcount(db):
+def test_update_returns_count_without_sane_multi_rowcount(db):
     # This fallback is LIVE on psycopg2 (supports_sane_multi_rowcount is
     # False there), not dialect-dead: every PostgreSQL update_many takes it.
     # Force it on SQLite by faking the UPDATE's result, mirroring
@@ -1089,7 +1079,7 @@ def test_update_many_returns_count_without_sane_multi_rowcount(db):
     assert tbl.find_one(id=3)["n"] == 3
 
 
-def test_update_many_chunk_size_flush_count(db):
+def test_update_chunk_size_flush_count(db):
     tbl = db["update_many_chunk_flush_count"]
     tbl.insert([{"id": i, "n": i} for i in range(4)])
 
@@ -1124,7 +1114,7 @@ def _write_row(tbl, method_name, row, keys, **kwargs):
     elif method_name == "upsert":
         tbl.upsert(row, keys, **kwargs)
     elif method_name == "upsert_many":
-        tbl.upsert_many([row], keys, **kwargs)
+        tbl.upsert([row], keys, **kwargs)
     else:
         raise ValueError(method_name)
 
@@ -1191,24 +1181,28 @@ def test_types_with_auto_create_false_rejected(db, method_name):
         )
 
 
-def test_ensure_creates_index(db):
-    tbl = db["ensure_index_insert_ignore"]
+def test_auto_create_creates_unique_arbiter(db):
+    # With auto_create (the default) the native insert_ignore/upsert create a
+    # UNIQUE arbiter index on the key columns.
+    tbl = db["arbiter_insert_ignore"]
     tbl.insert_ignore({"a": 1}, ["a"])
     assert tbl.has_index(["a"]) is True
 
-    tbl_no_ensure = db["ensure_index_insert_ignore_off"]
-    tbl_no_ensure.insert({"a": 1})
-    tbl_no_ensure.insert_ignore({"a": 2}, ["a"], auto_create=False)
-    assert tbl_no_ensure.has_index(["a"]) is False
-
-    tbl2 = db["ensure_index_upsert"]
+    tbl2 = db["arbiter_upsert"]
     tbl2.upsert({"a": 1}, ["a"])
     assert tbl2.has_index(["a"]) is True
 
-    tbl2_no_ensure = db["ensure_index_upsert_off"]
-    tbl2_no_ensure.insert({"a": 1})
-    tbl2_no_ensure.upsert({"a": 2}, ["a"], auto_create=False)
-    assert tbl2_no_ensure.has_index(["a"]) is False
+    # With auto_create=False and no pre-existing unique index there is no
+    # arbiter to conflict on, so the database raises its own error.
+    off1 = db["arbiter_insert_ignore_off"]
+    off1.insert({"a": 1})
+    with pytest.raises(SQLAlchemyError):
+        off1.insert_ignore({"a": 2}, ["a"], auto_create=False)
+
+    off2 = db["arbiter_upsert_off"]
+    off2.insert({"a": 1})
+    with pytest.raises(SQLAlchemyError):
+        off2.upsert({"a": 2}, ["a"], auto_create=False)
 
 
 def test_chunked_update(db):
@@ -1232,34 +1226,34 @@ def test_chunked_update(db):
     assert tbl.find_one(id=2)["location"] == tbl.find_one(id=3)["location"] == "asdf"
 
 
-def test_upsert_many(db):
+def test_upsert_iterable(db):
     # Also tests updating on records with different attributes
-    tbl = db["upsert_many_test"]
+    tbl = db["upsert_iterable_test"]
 
     weight = 100
-    tbl.upsert_many([{"age": 10}, {"weight": weight}], "id")
+    tbl.upsert([{"age": 10}, {"weight": weight}], "id")
     assert tbl.find_one(id=1)["age"] == 10
 
-    tbl.upsert_many([{"id": 1, "age": 70}, {"id": 2, "weight": weight / 2}], "id")
+    tbl.upsert([{"id": 1, "age": 70}, {"id": 2, "weight": weight / 2}], "id")
     assert tbl.find_one(id=2)["weight"] == weight / 2
 
 
-def test_upsert_many_duplicate_keys_last_wins(db):
+def test_upsert_duplicate_keys_last_wins(db):
     tbl = db["upsert_many_duplicate_keys"]
     # Two rows sharing the same key in a single batch: a single up-front
     # exists-check can't see one row's insert when classifying the next,
     # so only the last occurrence's values must survive.
-    tbl.upsert_many([{"id": 1, "value": "first"}, {"id": 1, "value": "second"}], "id")
+    tbl.upsert([{"id": 1, "value": "first"}, {"id": 1, "value": "second"}], "id")
     assert len(tbl) == 1
     assert tbl.find_one(id=1)["value"] == "second"
 
 
-def test_upsert_many_duplicate_keys_last_wins_across_chunks(db):
+def test_upsert_duplicate_keys_last_wins_across_chunks(db):
     tbl = db["upsert_many_duplicate_keys_chunks"]
     # chunk_size=1 splits the duplicate pair across two batches: the
     # second batch's exists-check must see the first batch's insert, same
     # as the single-batch case above.
-    tbl.upsert_many(
+    tbl.upsert(
         [{"id": 1, "value": "first"}, {"id": 1, "value": "second"}],
         "id",
         chunk_size=1,
@@ -1268,16 +1262,16 @@ def test_upsert_many_duplicate_keys_last_wins_across_chunks(db):
     assert tbl.find_one(id=1)["value"] == "second"
 
 
-def test_upsert_many_composite_key(db):
+def test_upsert_composite_key(db):
     tbl = db["upsert_many_composite_key"]
-    tbl.upsert_many(
+    tbl.upsert(
         [{"a": 1, "b": 1, "value": "x"}, {"a": 1, "b": 2, "value": "y"}],
         ["a", "b"],
     )
     assert len(tbl) == 2
 
     # Update the first pair and insert a brand-new pair in the same call.
-    tbl.upsert_many(
+    tbl.upsert(
         [{"a": 1, "b": 1, "value": "x-updated"}, {"a": 2, "b": 1, "value": "z"}],
         ["a", "b"],
     )
@@ -1287,25 +1281,25 @@ def test_upsert_many_composite_key(db):
     assert tbl.find_one(a=2, b=1)["value"] == "z"
 
 
-def test_upsert_many_case_insensitive_key(db):
+def test_upsert_case_insensitive_key(db):
     # A case-mismatched key (['ID'] against an 'id' column) must update the
     # existing row, not KeyError on the exact-match column collection nor
     # silently reroute the row to a duplicate INSERT.
     tbl = db["upsert_many_case_key"]
     tbl.insert([{"id": 1, "n": 1}])
-    tbl.upsert_many([{"ID": 1, "n": 10}], ["ID"])
+    tbl.upsert([{"ID": 1, "n": 10}], ["ID"])
     assert len(tbl) == 1
     assert tbl.find_one(id=1)["n"] == 10
 
 
-def test_upsert_many_heterogeneous_columns_batched(db):
+def test_upsert_heterogeneous_columns_batched(db):
     tbl = db["upsert_many_hetero_batched"]
     tbl.insert([{"id": 1, "x": "x1", "y": "y1"}, {"id": 2, "x": "x2", "y": "y2"}])
 
     # Regression check: the batched rewrite must still route through
     # update_many's per-group SET clause (A1's fix), not NULL out columns
     # missing from a given row.
-    tbl.upsert_many([{"id": 1, "x": "x1-new"}, {"id": 2, "y": "y2-new"}], "id")
+    tbl.upsert([{"id": 1, "x": "x1-new"}, {"id": 2, "y": "y2-new"}], "id")
 
     row1 = tbl.find_one(id=1)
     row2 = tbl.find_one(id=2)
@@ -1315,13 +1309,13 @@ def test_upsert_many_heterogeneous_columns_batched(db):
     assert row2["y"] == "y2-new"
 
 
-def test_upsert_many_batched_statement_count(db):
+def test_upsert_batched_statement_count(db):
     # One statement per column group per chunk (executemany), not one per
     # row: 500 uniform rows at the default chunk_size must compile to
     # exactly one INSERT ... ON CONFLICT execution. (Replaces a wall-clock
     # smoke check that even the old per-row implementation could pass.)
     tbl = db["upsert_many_batched"]
-    tbl.upsert_many([{"id": 0, "value": 0}], "id")  # pre-create cols + arbiter
+    tbl.upsert([{"id": 0, "value": 0}], "id")  # pre-create cols + arbiter
 
     conn = db.executable
     original_execute = conn.execute
@@ -1334,7 +1328,7 @@ def test_upsert_many_batched_statement_count(db):
 
     conn.execute = spy
     try:
-        tbl.upsert_many([{"id": i, "value": i} for i in range(1, 501)], "id")
+        tbl.upsert([{"id": i, "value": i} for i in range(1, 501)], "id")
     finally:
         del conn.execute
 
@@ -1342,29 +1336,29 @@ def test_upsert_many_batched_statement_count(db):
     assert len(tbl) == 501
 
 
-def test_upsert_many_default_chunk_size_does_not_crash_on_sqlite(db):
+def test_upsert_default_chunk_size_does_not_crash_on_sqlite(db):
     # A full default-sized chunk (1000 rows) must go through in one native
     # upsert executemany without tripping any backend statement limit.
     tbl = db["upsert_many_default_chunk_crash"]
     rows = [{"id": i, "value": i} for i in range(1000)]
-    result = tbl.upsert_many(rows, "id")
+    result = tbl.upsert(rows, "id")
     assert result == 1000
     assert len(tbl) == 1000
 
 
-def test_upsert_many_returns_count(db):
+def test_upsert_returns_count(db):
     tbl = db["upsert_many_returns_count"]
     tbl.insert([{"id": 1, "n": 1}])
-    result = tbl.upsert_many([{"id": 1, "n": 10}, {"id": 2, "n": 20}], "id")
+    result = tbl.upsert([{"id": 1, "n": 10}, {"id": 2, "n": 20}], "id")
     assert result == 2  # one update, one insert
 
 
-def test_upsert_many_returns_count_duplicate_split_across_chunk(db):
+def test_upsert_returns_count_duplicate_split_across_chunk(db):
     # The return value counts input rows processed (the DB resolves how many
     # became inserts vs updates); a repeated key still collapses to one
     # stored row, with the last occurrence's values winning.
     tbl = db["upsert_many_count_duplicate_chunk"]
-    result = tbl.upsert_many(
+    result = tbl.upsert(
         [{"id": 1, "value": "a"}, {"id": 1, "value": "b"}, {"id": 2, "value": "c"}],
         "id",
         chunk_size=2,
@@ -1374,13 +1368,13 @@ def test_upsert_many_returns_count_duplicate_split_across_chunk(db):
     assert tbl.find_one(id=1)["value"] == "b"
 
 
-def test_upsert_many_returns_count_across_multiple_batches(db):
+def test_upsert_returns_count_across_multiple_batches(db):
     # chunk_size=1 forces 4 separate batches: two updates, then two
     # inserts. The returned count must accumulate across every batch, not
     # just reflect the last one.
     tbl = db["upsert_many_count_multi_batch"]
     tbl.insert([{"id": 1, "n": 1}, {"id": 2, "n": 2}])
-    result = tbl.upsert_many(
+    result = tbl.upsert(
         [
             {"id": 1, "n": 10},
             {"id": 2, "n": 20},
@@ -1393,90 +1387,88 @@ def test_upsert_many_returns_count_across_multiple_batches(db):
     assert result == 4
 
 
-def test_upsert_many_creates_index(db):
+def test_upsert_creates_index(db):
     tbl = db["upsert_many_creates_index"]
-    tbl.upsert_many([{"a": 1}], ["a"])
+    tbl.upsert([{"a": 1}], ["a"])
     assert tbl.has_index(["a"]) is True
 
 
-def test_upsert_many_ensure_false_uses_existing_unique_index(db):
+def test_upsert_ensure_false_uses_existing_unique_index(db):
     # auto_create=False must not create an index — the caller supplies the unique
     # arbiter themselves, and the upsert then rides on it.
     tbl = db["upsert_many_ensure_false_index"]
     tbl.insert({"a": 1, "v": "old"})
     tbl.create_index(["a"], unique=True)
     before = len(tbl.db.inspect.get_indexes(tbl.name))
-    tbl.upsert_many(
-        [{"a": 1, "v": "new"}, {"a": 2, "v": "x"}], ["a"], auto_create=False
-    )
+    tbl.upsert([{"a": 1, "v": "new"}, {"a": 2, "v": "x"}], ["a"], auto_create=False)
     assert len(tbl.db.inspect.get_indexes(tbl.name)) == before
     assert len(tbl) == 2
     assert tbl.find_one(a=1)["v"] == "new"
 
 
-def test_upsert_many_ensure_false_needs_unique_index(db):
+def test_upsert_ensure_false_needs_unique_index(db):
     # With auto_create=False no unique arbiter index is created, and the DB-native
     # upsert has nothing to conflict on: the backend raises its own error
     # (the old SELECT-then-classify path silently needed no index at all).
     tbl = db["upsert_many_ensure_false_no_index"]
     tbl.insert({"a": 1})
     with pytest.raises(SQLAlchemyError):
-        tbl.upsert_many([{"a": 2}], ["a"], auto_create=False)
+        tbl.upsert([{"a": 2}], ["a"], auto_create=False)
 
 
-def test_upsert_many_none_key(db):
+def test_upsert_none_key(db):
     # A None-valued key must INSERT (NULLs are distinct in a unique index).
     # The old Python classifier matched the existing NULL row via IS NULL,
     # then routed it to an UPDATE whose `key = NULL` bind matched nothing —
     # the row silently vanished from the write.
     tbl = db["upsert_many_none_key"]
-    tbl.upsert_many([{"k": None, "v": "first"}], ["k"])
+    tbl.upsert([{"k": None, "v": "first"}], ["k"])
     assert len(tbl) == 1
-    tbl.upsert_many([{"k": None, "v": "second"}], ["k"])
+    tbl.upsert([{"k": None, "v": "second"}], ["k"])
     rows = list(tbl.find(_order_by="id"))
     assert len(rows) == 2, rows
     assert {r["v"] for r in rows} == {"first", "second"}
 
 
-def test_upsert_many_coerced_key(db):
+def test_upsert_coerced_key(db):
     # Key identity is decided by SQL equality, not Python equality: SQLite
     # coerces '5' to 5 on insert into an INTEGER-affinity column, so both
     # writes target one row. The old classifier compared Python tuples,
     # where ('5',) != (5,) rerouted the second write to a duplicate INSERT.
     tbl = db["upsert_many_coerced_key"]
-    tbl.upsert_many([{"k": 5, "v": "a"}], ["k"])
-    tbl.upsert_many([{"k": "5", "v": "b"}], ["k"])
+    tbl.upsert([{"k": 5, "v": "a"}], ["k"])
+    tbl.upsert([{"k": "5", "v": "b"}], ["k"])
     assert len(tbl) == 1
     assert tbl.find_one(k=5)["v"] == "b"
 
 
-def test_upsert_many_key_only_rows(db):
+def test_upsert_key_only_rows(db):
     # Rows carrying only key columns have nothing to SET: the statement must
     # fall back to conflict-do-nothing, not emit an empty update.
     tbl = db["upsert_many_key_only"]
-    tbl.upsert_many([{"id": 1}, {"id": 1}, {"id": 2}], ["id"])
+    tbl.upsert([{"id": 1}, {"id": 1}, {"id": 2}], ["id"])
     assert len(tbl) == 2
 
 
-def test_upsert_many_mixed_key_only_and_valued_rows(db):
+def test_upsert_mixed_key_only_and_valued_rows(db):
     # Key-only rows and valued rows in the same call land in different
     # column groups (do-nothing vs do-update statements).
     tbl = db["upsert_many_mixed_key_only"]
     tbl.insert({"id": 1, "v": "keep"})
-    tbl.upsert_many([{"id": 1}, {"id": 2, "v": "B"}], ["id"])
+    tbl.upsert([{"id": 1}, {"id": 2, "v": "B"}], ["id"])
     assert len(tbl) == 2
     assert tbl.find_one(id=1)["v"] == "keep"
     assert tbl.find_one(id=2)["v"] == "B"
 
 
-def test_upsert_many_duplicate_data_raises(db):
+def test_upsert_duplicate_data_raises(db):
     # Building the unique arbiter index over pre-existing duplicate key
     # values cannot succeed; it must surface as a clear DatasetError, not a
     # raw IntegrityError (and never be swallowed).
     tbl = db["upsert_many_duplicate_data"]
     tbl.insert([{"a": 1, "v": "x"}, {"a": 1, "v": "y"}])
     with pytest.raises(DatasetError, match="duplicate values"):
-        tbl.upsert_many([{"a": 2, "v": "z"}], ["a"])
+        tbl.upsert([{"a": 2, "v": "z"}], ["a"])
 
 
 def test_drop_operations(table):
