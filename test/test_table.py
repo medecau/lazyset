@@ -683,6 +683,17 @@ def test_insert_many_chunk_size_flush(db):
     assert len(tbl) == 4
 
 
+def test_insert_many_case_insensitive_column(db):
+    # A case-mismatched key ('NAME' against a 'name' column) must be
+    # normalized to the real column name, like update_many/upsert_many do —
+    # not silently stored as NULL because the executemany param went unused.
+    tbl = db["insert_many_case_col"]
+    tbl.insert({"name": "seed"})
+    tbl.insert_many([{"NAME": "x"}])
+    rows = list(tbl.find(name="x"))
+    assert len(rows) == 1, rows
+
+
 def test_insert_many_preserves_server_default(db):
     # A column omitted from a given row must fall back to its DB default,
     # matching insert(). The old pad-to-union step bound an explicit NULL,

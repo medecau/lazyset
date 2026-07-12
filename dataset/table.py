@@ -258,7 +258,11 @@ class Table:
         inserted = 0
         chunk: list[MutableRow] = []
         for index, row in enumerate(rows):
-            chunk.append(dict(row))
+            # Normalize column names (case-insensitive match against the real
+            # DB names), copying the caller's dict — same as update_many and
+            # upsert_many. A raw dict(row) left e.g. {'NAME': …} as an unused
+            # executemany param and stored NULL in the 'name' column.
+            chunk.append({self._get_column_name(k): v for k, v in row.items()})
 
             # Insert when chunk_size is fulfilled or this is the last row
             if len(chunk) == chunk_size or index == len(rows) - 1:
