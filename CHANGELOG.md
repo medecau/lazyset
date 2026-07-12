@@ -85,12 +85,17 @@ changes must be reconstructed from revision history.*
     (`literal_execute`) crashed on `bytes` and could mis-render other types. Lists larger than the
     backend's bind-variable limit (~32k on modern SQLite, 65535 on PostgreSQL/MySQL) now raise the
     backend's own error; chunk huge IN-lists in the caller. *(behavior change)*
-  - **Identifier length caps**: `normalize_column_name`/`normalize_table_name` now byte-trim to 63
-    bytes only on PostgreSQL (which truncates identifiers server-side; emulating it keeps our names
-    equal to the stored ones) via a new optional `max_bytes=` parameter. On SQLite and MySQL, long
-    multibyte names are no longer silently byte-truncated (MySQL's limit is 64 *characters*, SQLite
-    is unbounded); the plain 63-character cap remains everywhere. Auto-generated index names keep
-    the unconditional byte cap. *(behavior change)*
+  - **Identifier length caps**: `normalize_column_name`/`normalize_table_name` now apply an
+    identifier-length cap **only on PostgreSQL** (which truncates identifiers to 63 bytes
+    server-side; emulating it keeps our in-memory name equal to the stored one) via a new optional
+    `max_bytes=` parameter. On SQLite and MySQL no cap is applied at all — the database owns
+    identifier length (MySQL's limit is 64 *characters* and it errors on overflow; SQLite is
+    unbounded). This drops the earlier unconditional 63-*character* cap, which silently
+    truncated/forked long or reflected names on those backends: a reflected >63-char SQLite column
+    was normalized to a nonexistent 63-char name, so `_column_keys` (store) and `_get_column_name`
+    (lookup) — both running this same normalization — disagreed with the real DB column.
+    Auto-generated index names keep their own unconditional byte cap, independent of this
+    parameter. *(behavior change)*
   - **Build system**: Migrated from setuptools to modern pyproject.toml with Hatchling (PEP 621)
   - **Linting**: Replaced flake8 with ruff for faster, more comprehensive linting
   - **CI/CD**: Updated GitHub Actions to use modern action versions (checkout@v4, setup-python@v5)

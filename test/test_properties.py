@@ -120,8 +120,9 @@ def test_normalize_error_messages():
 @example(name="€" * 40)
 def test_normalize_column_name_invariants(name):
     out = normalize_column_name(name)
-    # Default (SQLite/MySQL): a plain character cap, no byte trimming.
-    assert len(out) <= 63
+    # Default (SQLite/MySQL): no length cap at all — the DB owns identifier
+    # length (only the char-validity/strip invariants hold here).
+    assert len(out) >= 1
     assert "." not in out
     assert "-" not in out
     assert out == out.strip()
@@ -147,6 +148,19 @@ def test_normalize_column_name_multibyte_not_bytecapped():
     # it silently forked a differently-named column from the caller's.
     name = "€" * 40
     assert normalize_column_name(name) == name
+
+
+def test_normalize_names_long_default_not_capped():
+    # Default path (SQLite/MySQL): the DB owns identifier length, so a long
+    # ASCII name is kept whole — no char cap. SQLite is unbounded; MySQL's
+    # limit is 64 chars and it errors on overflow rather than truncating.
+    # Truncating here forked store-side (_column_keys) from lookup-side
+    # (_get_column_name) for reflected >63-char columns.
+    assert normalize_column_name("a" * 100) == "a" * 100
+    assert normalize_table_name("t" * 100) == "t" * 100
+    # PostgreSQL (max_bytes=63) still emulates its server-side byte cap.
+    assert normalize_column_name("a" * 100, max_bytes=63) == "a" * 63
+    assert normalize_table_name("t" * 100, max_bytes=63) == "t" * 63
 
 
 @given(s=st.text())
@@ -219,7 +233,8 @@ def test_normalize_column_key_preserves_internal_space():
 @example(name="t" * 100)
 def test_normalize_table_name_invariants(name):
     out = normalize_table_name(name)
-    assert 1 <= len(out) <= 63
+    # Default (SQLite/MySQL): no length cap — the DB owns identifier length.
+    assert len(out) >= 1
     assert normalize_table_name(out) == out  # idempotent
 
 
