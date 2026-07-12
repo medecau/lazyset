@@ -160,22 +160,29 @@ def ensure_strings(value: str | Iterable[str] | None) -> list[str]:
     return list(value)
 
 
-def normalize_column_name(name: str) -> str:
-    """Check if a string is a reasonable thing to use as a column name."""
+def normalize_column_name(name: str, max_bytes: int | None = None) -> str:
+    """Check if a string is a reasonable thing to use as a column name.
+
+    ``max_bytes`` is the dialect's identifier *byte* limit: PostgreSQL call
+    sites pass 63 (PG truncates identifiers to 63 bytes server-side, so
+    emulating it keeps our in-memory name equal to the stored one). SQLite
+    and MySQL have no byte limit — MySQL's is 64 *characters* — so the
+    default applies only the character cap.
+    """
     if not isinstance(name, str):
         raise ValueError(f"{name!r} is not a valid column name.")
 
     # Validate the full stripped name *before* truncating: a trailing "."
-    # or "-" beyond byte 63 would otherwise be sliced off and slip through.
+    # or "-" beyond the cap would otherwise be sliced off and slip through.
     name = name.strip()
     if not len(name) or "." in name or "-" in name:
         raise ValueError(f"{name!r} is not a valid column name.")
 
-    # Column names can be 63 *bytes* max in postgresql. Limit to 63
-    # characters first, then trim any trailing multi-byte overflow.
     name = name[:63]
-    while len(name.encode("utf-8")) >= 64:
-        name = name[:-1]
+    if max_bytes is not None:
+        # Trim any trailing multi-byte overflow, codepoint-safely.
+        while len(name.encode("utf-8")) > max_bytes:
+            name = name[:-1]
     return name
 
 
@@ -191,19 +198,24 @@ def normalize_column_key(name: str | None) -> str | None:
     return name.upper().strip()
 
 
-def normalize_table_name(name: str) -> str:
-    """Check if the table name is obviously invalid."""
+def normalize_table_name(name: str, max_bytes: int | None = None) -> str:
+    """Check if the table name is obviously invalid.
+
+    ``max_bytes`` follows the same dialect rule as
+    :py:func:`normalize_column_name`: PostgreSQL call sites pass 63; the
+    default applies only the character cap.
+    """
     if not isinstance(name, str):
         raise ValueError(f"Invalid table name: {name!r}")
     # Validate emptiness on the stripped name before truncating.
     name = name.strip()
     if not len(name):
         raise ValueError(f"Invalid table name: {name!r}")
-    # Table names, like columns, are capped at 63 *bytes* in PostgreSQL:
-    # limit to 63 characters first, then trim any trailing multi-byte overflow.
     name = name[:63]
-    while len(name.encode("utf-8")) >= 64:
-        name = name[:-1]
+    if max_bytes is not None:
+        # Trim any trailing multi-byte overflow, codepoint-safely.
+        while len(name.encode("utf-8")) > max_bytes:
+            name = name[:-1]
     return name
 
 

@@ -120,13 +120,33 @@ def test_normalize_error_messages():
 @example(name="€" * 40)
 def test_normalize_column_name_invariants(name):
     out = normalize_column_name(name)
-    # PostgreSQL caps identifiers at 63 bytes.
-    assert len(out.encode("utf-8")) < 64
+    # Default (SQLite/MySQL): a plain character cap, no byte trimming.
+    assert len(out) <= 63
     assert "." not in out
     assert "-" not in out
     assert out == out.strip()
     # Idempotent: normalizing an already-normalized name is a no-op.
     assert normalize_column_name(out) == out
+
+
+@given(name=COLNAME)
+@example(name="a" * 100)
+@example(name="€" * 40)
+def test_normalize_column_name_max_bytes_invariants(name):
+    # PostgreSQL call sites pass max_bytes=63 (PG truncates identifiers to
+    # 63 bytes server-side; emulating it keeps our name equal to the stored
+    # one — that's the delegation boundary).
+    out = normalize_column_name(name, max_bytes=63)
+    assert len(out.encode("utf-8")) < 64
+    assert normalize_column_name(out, max_bytes=63) == out
+
+
+def test_normalize_column_name_multibyte_not_bytecapped():
+    # 40 multibyte chars = 120 bytes: legal on SQLite (unbounded) and MySQL
+    # (64 *chars*), so the default must keep the name whole — byte-trimming
+    # it silently forked a differently-named column from the caller's.
+    name = "€" * 40
+    assert normalize_column_name(name) == name
 
 
 @given(s=st.text())
@@ -144,14 +164,16 @@ def test_normalize_column_name_rejects_blank(s):
 
 
 def test_normalize_column_name_byte_boundary():
-    """A name that is 63 chars but 64 *bytes* must lose exactly the overflow char."""
+    """max_bytes=63 (PostgreSQL): a 63-char/64-byte name loses the overflow char."""
     name = "a" * 62 + "é"
     assert len(name) == 63
     assert len(name.encode("utf-8")) == 64
 
-    out = normalize_column_name(name)
+    out = normalize_column_name(name, max_bytes=63)
     assert out == "a" * 62
     assert len(out.encode("utf-8")) == 62
+    # Without the PostgreSQL byte cap the name fits and is kept whole.
+    assert normalize_column_name(name) == name
 
 
 # ---------------------------------------------------------------------------
@@ -208,14 +230,22 @@ def test_normalize_table_name_rejects_blank(s):
 
 
 def test_normalize_table_name_byte_boundary():
-    """A name that is 63 chars but 64 *bytes* must lose exactly the overflow char."""
+    """max_bytes=63 (PostgreSQL): a 63-char/64-byte name loses the overflow char."""
     name = "a" * 62 + "é"
     assert len(name) == 63
     assert len(name.encode("utf-8")) == 64
 
-    out = normalize_table_name(name)
+    out = normalize_table_name(name, max_bytes=63)
     assert out == "a" * 62
     assert len(out.encode("utf-8")) == 62
+
+
+def test_normalize_table_name_multibyte_not_bytecapped():
+    # A 40-char multibyte table name is legal on SQLite/MySQL; the
+    # unconditional 63-*byte* trim silently pointed the Table object at a
+    # truncated (different) table name on those backends.
+    name = "€" * 40
+    assert normalize_table_name(name) == name
 
 
 # ---------------------------------------------------------------------------

@@ -65,6 +65,10 @@ class Database:
         self.is_postgres = self.engine.dialect.name == "postgresql"
         self.is_sqlite = self.engine.dialect.name == "sqlite"
         self.is_mysql = "mysql" in self.engine.dialect.name
+        # PostgreSQL truncates identifiers to 63 *bytes* server-side;
+        # emulating that keeps our in-memory names equal to the stored ones.
+        # SQLite/MySQL have no byte limit, so no byte trim is applied there.
+        self._max_ident_bytes: int | None = 63 if self.is_postgres else None
         if on_connect_statements is None:
             on_connect_statements = []
 
@@ -254,7 +258,9 @@ class Database:
     def __contains__(self, table_name: str) -> bool:
         """Check if the given table name exists in the database."""
         try:
-            table_name = normalize_table_name(table_name)
+            table_name = normalize_table_name(
+                table_name, max_bytes=self._max_ident_bytes
+            )
             if table_name in self.tables:
                 return True
             return table_name in self.views
@@ -299,7 +305,7 @@ class Database:
         assert not isinstance(primary_type, str), (
             "Text-based primary_type support is dropped, use db.types."
         )
-        table_name = normalize_table_name(table_name)
+        table_name = normalize_table_name(table_name, max_bytes=self._max_ident_bytes)
         with self.lock:
             if table_name not in self._tables:
                 self._tables[table_name] = Table(
@@ -324,7 +330,7 @@ class Database:
 
             table = db.load_table('population')
         """
-        table_name = normalize_table_name(table_name)
+        table_name = normalize_table_name(table_name, max_bytes=self._max_ident_bytes)
         with self.lock:
             if table_name not in self._tables:
                 self._tables[table_name] = Table(self, table_name)

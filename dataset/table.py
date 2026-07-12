@@ -64,7 +64,9 @@ class Table:
     ):
         """Initialise the table from database schema."""
         self.db = database
-        self.name = normalize_table_name(table_name)
+        self.name = normalize_table_name(
+            table_name, max_bytes=database._max_ident_bytes
+        )
         self._table: SQLATable | None = None
         self._columns: dict[str, str] | None = None
         self._indexes: list[tuple[str, ...]] = []
@@ -117,7 +119,9 @@ class Table:
                 table = self.table
                 self._columns = {}
                 for column in table.columns:
-                    name = normalize_column_name(column.name)
+                    name = normalize_column_name(
+                        column.name, max_bytes=self.db._max_ident_bytes
+                    )
                     key = normalize_column_key(name)
                     if key in self._columns:
                         log.warning("Duplicate column: %s", name)
@@ -136,12 +140,14 @@ class Table:
         """Check if a column with the given name exists on this table."""
         if column is None:
             return False
-        key = normalize_column_key(normalize_column_name(column))
+        key = normalize_column_key(
+            normalize_column_name(column, max_bytes=self.db._max_ident_bytes)
+        )
         return key in self._column_keys
 
     def _get_column_name(self, name: str) -> str:
         """Find the best column name with case-insensitive matching."""
-        name = normalize_column_name(name)
+        name = normalize_column_name(name, max_bytes=self.db._max_ident_bytes)
         key = normalize_column_key(name)
         if key is None:
             return name
