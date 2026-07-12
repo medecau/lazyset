@@ -10,8 +10,8 @@ master_doc = "index"
 
 project = "dataset"
 copyright = "2013-2026, Friedrich Lindenberg, Gregor Aisch, Stefan Wehrmeyer"
-version = "2.0.0"
-release = "2.0.0"
+version = "3.0.0"
+release = "3.0.0"
 
 exclude_patterns = ["_build"]
 pygments_style = "sphinx"

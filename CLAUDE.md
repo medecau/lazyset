@@ -2,12 +2,13 @@
 
 Lightweight Python library for reading/writing databases as easily as JSON — a thin layer over SQLAlchemy, no ORM models. Supports SQLite (default), PostgreSQL, MySQL. **Design bias: simplicity over features — don't over-engineer.**
 
+**Hard fork of [pudo/dataset](https://github.com/pudo/dataset).** The import name stays `dataset`; the distribution/repo identity is the fork's own (name TBD). The 3.0 line deliberately breaks from upstream: five self-describing write verbs (`insert`/`insert_ignore`/`upsert`/`update`/`delete`, each taking one row **or** any iterable of rows), one honestly-named `auto_create` flag, and loud errors where 2.x was silently wrong. There are no upstream users of the fork to shepherd — see the fork-line policy under Must-follow.
+
 ## Layout
-- `dataset/database.py` — `Database`: connection, transactions, `query()`
+- `dataset/database.py` — `Database`: connection, transactions, `query()`, `db[name]` / `db.table(...)` accessors
 - `dataset/table.py` — `Table`: CRUD, schema management, filter operators (`_generate_clause`)
 - `dataset/types.py` — type mapping (`Types.guess`), `ColumnType`
-- `dataset/util.py` — `ResultIter`, name normalization, type aliases
-- `dataset/chunked.py` — `ChunkedInsert` / `ChunkedUpdate`
+- `dataset/util.py` — `Results`, name normalization, exceptions, type aliases
 - `test/` — pytest; `conftest.py` = `db` + `table` fixtures, `sample_data.py` = shared test data, `test_properties.py` = Hypothesis tests for pure helpers
 
 ## Commands
@@ -18,11 +19,11 @@ Lightweight Python library for reading/writing databases as easily as JSON — a
 
 ## Must-follow
 - **Keep docs current:** when you change code, commands, deps, or public API, update the docs the change touches in the same pass — this `CLAUDE.md`, `README.md`, `docs/*.rst`, `CHANGELOG.md`. A stale doc is a bug.
-- **Multi-backend:** every change must work on SQLite, PostgreSQL, AND MySQL. Branch on `db.is_sqlite` / `is_postgres` / `is_mysql`. SQLite can't drop columns; MySQL text indexes need a prefix length (10 chars).
-- **Backward compatibility:** never rename public API params/methods — this library is widely deployed. Prefer `# noqa` over a breaking rename (e.g. `create_column`'s `type` shadows the builtin — keep it).
+- **Multi-backend:** every change must work on SQLite, PostgreSQL, AND MySQL. Branch on `db.is_sqlite` / `is_postgres` / `is_mysql`. MySQL text indexes need a prefix length (10 chars). `drop_column` is attempted on every backend and the DB decides (SQLite ≥ 3.35 supports it; older SQLite raises).
+- **Fork-line — breaking changes are sanctioned:** this is a hard fork with no upstream users to shepherd, so renaming/removing public API is allowed when it makes the surface clearer. The 3.0 redesign does exactly that: `ensure`→`auto_create`; `insert_many`/`update_many`/`upsert_many` folded into `insert`/`update`/`upsert` (`Mapping` **or** `Iterable[Mapping]`, dispatched by shape); `chunked.py` deleted in favour of `insert(gen, chunk_size=N)`; accessors collapsed to `db[name]` / `db.table(...)`; `ResultIter`→`Results`, `OutRow`→`Row`. Rules that still bind: rename deliberately, land the change with its doc + test sweep in the **same pass**, and record every break in `CHANGELOG.md`. `create_column`'s `type` param shadows the builtin — keep it (`# noqa`); a cosmetic rename buys nothing.
 - **Auto-commit:** call `db._auto_commit()` after any write made outside an explicit transaction.
 - **Thread safety:** hold `self.db.lock` for schema ops; connections are thread-local; transaction depth lives in `self.local.tx`.
-- **Don't mutate input rows:** copy to `dict()` before modifying (see `update_many`, `_queue_add`).
+- **Don't mutate input rows:** copy to `dict()` before modifying (see `update`, `insert` iterable paths).
 - **Delegate to SQLAlchemy and the database.** Prefer built-in SQLAlchemy behavior and database-enforced semantics over re-implementing them in Python:
   - Let SQLAlchemy bind and render values (bind parameters, type coercion, identifier quoting, dialect literal rendering) — never hand-roll SQL-value serialization.
   - Let the database decide row existence, equality, collation, NULL semantics, server-side defaults, and identifier limits — don't classify/compare in Python where SQL semantics (NULL, type affinity, case-insensitive collation) would differ.
@@ -40,4 +41,4 @@ Lightweight Python library for reading/writing databases as easily as JSON — a
 
 ## Docs & scope
 API + guides: https://dataset.readthedocs.io/ · source in `docs/` (Sphinx/RST, `cd docs && make html`) · changelog in `CHANGELOG.md`. Release: `bump2version` → update `CHANGELOG.md` → `make dists` → push a signed tag `vX.Y.Z` (tag push auto-publishes to PyPI via GitHub Actions).
-Out of scope: FK/relations, Python-side JOINs, async. DB-native UPSERT is in scope for `upsert_many` (`ON CONFLICT`/`ON DUPLICATE KEY` with a unique arbiter index); the singular `upsert()` still uses UPDATE-rowcount-then-INSERT.
+Out of scope: FK/relations, Python-side JOINs, async. DB-native UPSERT is the single `upsert()` algorithm (`ON CONFLICT DO UPDATE` / `ON DUPLICATE KEY UPDATE`), and `insert_ignore()` is native `DO NOTHING` / ODKU-noop. Both require `keys` as the conflict arbiter and create the UNIQUE arbiter index under `auto_create`.
