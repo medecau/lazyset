@@ -2,7 +2,7 @@ import logging
 import threading
 import warnings
 from collections.abc import Iterable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.mysql import insert as mysql_insert
@@ -175,35 +175,117 @@ class Table:
             return name
         return self._column_keys.get(key, name)
 
+    @overload
     def insert(
         self,
-        row: WriteRow,
+        rows: WriteRow,
         auto_create: bool | None = None,
         types: dict[str, ColumnType] | None = None,
+        chunk_size: int = 1000,
+    ) -> Any: ...
+
+    @overload
+    def insert(
+        self,
+        rows: Iterable[WriteRow],
+        auto_create: bool | None = None,
+        types: dict[str, ColumnType] | None = None,
+        chunk_size: int = 1000,
+    ) -> int: ...
+
+    def insert(
+        self,
+        rows: WriteRow | Iterable[WriteRow],
+        auto_create: bool | None = None,
+        types: dict[str, ColumnType] | None = None,
+        chunk_size: int = 1000,
     ) -> Any:
-        """Add a ``row`` dict by inserting it into the table.
+        """Insert one row **or** an iterable of rows into the table.
 
-        If ``auto_create`` is set, any of the keys of the row are not
-        table columns, they will be created automatically.
-
-        During column creation, ``types`` will be checked for a key
-        matching the name of a column to be created, and the given
-        SQLAlchemy column type will be used. Otherwise, the type is
-        guessed from the row value, defaulting to a simple unicode
-        field.
+        A single ``Mapping`` inserts one row and returns its primary key (or
+        ``None`` if the table has no primary key). Any other iterable of rows
+        — a list, or a generator, consumed streamingly — performs a bulk
+        insert in chunks of ``chunk_size`` and returns the number of rows
+        inserted.
         ::
 
-            data = dict(title='I am a banana!')
-            table.insert(data)
+            table.insert(dict(title='I am a banana!'))
+            table.insert([dict(name='Dolly')] * 10000)
+            table.insert(row for row in source)          # generators too
 
-        Returns the inserted row's primary key.
+        With ``auto_create`` on (the default) columns absent from the table
+        are created; ``types`` overrides the guessed type for a created
+        column. The type is otherwise guessed from the row value, defaulting
+        to a text field.
         """
-        row = self._sync_columns(row, auto_create, types=types)
-        res = self.db.executable.execute(self.table.insert().values(row))
+        if isinstance(rows, Mapping):
+            return self._insert_one(rows, auto_create, types)
+        return self._insert_rows(rows, chunk_size, auto_create, types)
+
+    def _insert_one(
+        self,
+        row: WriteRow,
+        auto_create: bool | None,
+        types: dict[str, ColumnType] | None,
+    ) -> Any:
+        synced = self._sync_columns(row, auto_create, types=types)
+        res = self.db.executable.execute(self.table.insert().values(synced))
         self.db._auto_commit()
         if res.inserted_primary_key is not None and len(res.inserted_primary_key) > 0:
             return res.inserted_primary_key[0]
-        return True
+        return None
+
+    def _insert_rows(
+        self,
+        rows: Iterable[WriteRow],
+        chunk_size: int,
+        auto_create: bool | None,
+        types: dict[str, ColumnType] | None,
+    ) -> int:
+        # Consume the iterable streamingly (generators included): buffer a
+        # chunk, sync + write it, repeat. No whole-input pre-scan, so a huge
+        # or lazy source is never fully materialised.
+        inserted = 0
+        chunk: list[MutableRow] = []
+        for row in rows:
+            chunk.append(dict(row))  # copy: never mutate the caller's row
+            if len(chunk) >= chunk_size:
+                inserted += self._flush_insert_chunk(chunk, auto_create, types)
+                chunk = []
+        if chunk:
+            inserted += self._flush_insert_chunk(chunk, auto_create, types)
+        return inserted
+
+    def _flush_insert_chunk(
+        self,
+        chunk: list[MutableRow],
+        auto_create: bool | None,
+        types: dict[str, ColumnType] | None,
+    ) -> int:
+        # Column creation is chunk-wide, so union this chunk's keys for one
+        # _sync_columns pass (this also enforces the auto_create=False
+        # strictness per chunk).
+        sync_row: MutableRow = {}
+        for row in chunk:
+            for key in row:
+                if key not in sync_row:
+                    sync_row[key] = row[key]
+        self._sync_columns(sync_row, auto_create, types=types)
+
+        # Group by the exact column set so an omitted column is left out of
+        # its group's INSERT and the DB applies its default, rather than being
+        # padded to the union with an explicit NULL (which would override a
+        # server_default). executemany needs a uniform key set per statement,
+        # which the grouping ensures. Column names are normalised to the real
+        # DB names (case-insensitive), so e.g. {'NAME': …} lands in 'name'.
+        groups: dict[frozenset[str], list[MutableRow]] = {}
+        for row in chunk:
+            norm = {self._get_column_name(k): v for k, v in row.items()}
+            groups.setdefault(frozenset(norm), []).append(norm)
+        for group_rows in groups.values():
+            self.db.executable.execute(self.table.insert(), group_rows)
+        self.db._auto_commit()
+        return len(chunk)
 
     def insert_ignore(
         self,
@@ -253,156 +335,106 @@ class Table:
             return True
         return False
 
-    def insert_many(
-        self,
-        rows: Sequence[WriteRow],
-        chunk_size: int = 1000,
-        auto_create: bool | None = None,
-        types: dict[str, ColumnType] | None = None,
-    ) -> int:
-        """Add many rows at a time.
-
-        This is significantly faster than adding them one by one. Per default
-        the rows are processed in chunks of 1000 per commit, unless you specify
-        a different ``chunk_size``.
-
-        See :py:meth:`insert() <dataset.Table.insert>` for details on
-        the other parameters.
-        ::
-
-            rows = [dict(name='Dolly')] * 10000
-            table.insert_many(rows)
-
-        Returns the number of rows inserted.
-        """
-        # Sync table before inputting rows. Column creation is legitimately
-        # call-wide, so union every row's keys for the _sync_columns pass.
-        sync_row: MutableRow = {}
-        for row in rows:
-            # Get a sample of the new column(s) from the row: dict membership
-            # is O(1), unlike testing against a rebuilt list every row.
-            for key in row:
-                if key not in sync_row:
-                    sync_row[key] = row[key]
-        self._sync_columns(sync_row, auto_create, types=types)
-
-        inserted = 0
-        chunk: list[MutableRow] = []
-        for index, row in enumerate(rows):
-            # Normalize column names (case-insensitive match against the real
-            # DB names), copying the caller's dict — same as update_many and
-            # upsert_many. A raw dict(row) left e.g. {'NAME': …} as an unused
-            # executemany param and stored NULL in the 'name' column.
-            chunk.append({self._get_column_name(k): v for k, v in row.items()})
-
-            # Insert when chunk_size is fulfilled or this is the last row
-            if len(chunk) == chunk_size or index == len(rows) - 1:
-                # Group by the exact column set so an omitted column is left
-                # out of its group's INSERT and the DB applies its default,
-                # rather than being padded to the union with an explicit NULL
-                # (which would override server_default). executemany requires
-                # a uniform key set per statement, which the grouping ensures.
-                # Rows may be reordered across keyset groups within a chunk;
-                # only visible via autoincrement PK order, and the method
-                # returns a count, so no contract breaks.
-                groups: dict[frozenset[str], list[MutableRow]] = {}
-                for chunk_row in chunk:
-                    groups.setdefault(frozenset(chunk_row), []).append(chunk_row)
-                for group_rows in groups.values():
-                    self.db.executable.execute(self.table.insert(), group_rows)
-                self.db._auto_commit()
-                inserted += len(chunk)
-                chunk = []
-        return inserted
-
     def update(
         self,
-        row: WriteRow,
+        rows: WriteRow | Iterable[WriteRow],
         keys: Sequence[str],
         auto_create: bool | None = None,
         types: dict[str, ColumnType] | None = None,
+        chunk_size: int = 1000,
     ) -> int:
-        """Update a row in the table.
+        """Update one row **or** an iterable of rows in the table.
 
-        The update is managed via the set of column names stated in ``keys``:
-        they will be used as filters for the data to be updated, using the
-        values in ``row``.
+        Rows are matched by the column names in ``keys``: those columns filter
+        which existing rows to update, using the remaining values in each row.
+        A single ``Mapping`` updates by one key set; any other iterable — a
+        list, or a generator, consumed streamingly — updates in chunks of
+        ``chunk_size``.
         ::
 
             # update all entries with id matching 10, setting their title
-            # columns
-            data = dict(id=10, title='I am a banana!')
-            table.update(data, ['id'])
+            table.update(dict(id=10, title='I am a banana!'), ['id'])
+            table.update([dict(id=1, n=10), dict(id=2, n=20)], ['id'])
 
-        If keys in ``row`` update columns not present in the table, they will
-        be created based on the settings of ``auto_create`` and ``types``, matching
-        the behavior of :py:meth:`insert() <dataset.Table.insert>`.
+        Since the same row supplies both the filter (``keys``) and the new
+        values, a key column's own value is never changed — it only locates
+        the row. New value columns are created per ``auto_create``/``types``,
+        as in :py:meth:`insert() <dataset.Table.insert>`.
 
-        Since the same ``row`` dict supplies both the filter (``keys``) and
-        the new values, a key column's own value can never be changed via
-        ``update()`` — it is only ever used to find the row, not to set it.
-
-        Returns the number of rows matched by ``keys``.
+        Returns the number of rows matched by ``keys``. On drivers with no
+        reliable executemany rowcount (notably psycopg2 on PostgreSQL) the
+        iterable form returns the number of *distinct key tuples* matched,
+        which is lower than the summed count when input rows repeat a key.
         """
-        row = self._sync_columns(row, auto_create, types=types)
-        args, row = self._keys_to_args(row, keys)
+        if isinstance(rows, Mapping):
+            return self._update_one(rows, keys, auto_create, types)
+        return self._update_rows(rows, keys, chunk_size, auto_create, types)
+
+    def _update_one(
+        self,
+        row: WriteRow,
+        keys: Sequence[str],
+        auto_create: bool | None,
+        types: dict[str, ColumnType] | None,
+    ) -> int:
+        synced = self._sync_columns(row, auto_create, types=types)
+        args, values = self._keys_to_args(synced, keys)
         clause = self._args_to_clause(args)
-        if not len(row):
+        if not len(values):
             return self.count(clause)
-        stmt = self.table.update().where(clause).values(row)
+        stmt = self.table.update().where(clause).values(values)
         rp = self.db.executable.execute(stmt)
         self.db._auto_commit()
         if rp.supports_sane_rowcount():
             return rp.rowcount
         return self.count(clause)
 
-    def update_many(
+    def _update_rows(
         self,
-        rows: Sequence[WriteRow],
+        rows: Iterable[WriteRow],
         keys: Sequence[str],
-        chunk_size: int = 1000,
-        auto_create: bool | None = None,
-        types: dict[str, ColumnType] | None = None,
+        chunk_size: int,
+        auto_create: bool | None,
+        types: dict[str, ColumnType] | None,
     ) -> int:
-        """Update many rows in the table at a time.
-
-        This is significantly faster than updating them one by one. Per default
-        the rows are processed in chunks of 1000 per commit, unless you specify
-        a different ``chunk_size``.
-
-        See :py:meth:`update() <dataset.Table.update>` for details on
-        the other parameters.
-
-        Returns the number of rows matched. On drivers that report no
-        reliable executemany rowcount (notably psycopg2 on PostgreSQL) this
-        is the number of *distinct key tuples* that matched, which is lower
-        than the summed per-statement count when input rows repeat a key.
-        """
         keys = ensure_strings(keys)
-
-        # Sync columns up front, mirroring insert_many's pre-scan (key
-        # columns included): a new value column is created honouring the
-        # previously-dead auto_create/types params, and an empty write to a
-        # deferred table raises the same clear DatasetError as insert()/
-        # update() instead of a raw CompileError or a bare KeyError.
-        sample: MutableRow = {}
+        updated = 0
+        chunk: list[MutableRow] = []
         for row in rows:
+            chunk.append(dict(row))
+            if len(chunk) >= chunk_size:
+                updated += self._flush_update_chunk(chunk, keys, auto_create, types)
+                chunk = []
+        if chunk:
+            updated += self._flush_update_chunk(chunk, keys, auto_create, types)
+        return updated
+
+    def _flush_update_chunk(
+        self,
+        chunk: list[MutableRow],
+        keys: Sequence[str],
+        auto_create: bool | None,
+        types: dict[str, ColumnType] | None,
+    ) -> int:
+        # Sync this chunk's columns (value columns + any key columns present),
+        # enforcing the auto_create=False strictness per chunk. A new value
+        # column honours auto_create/types; an empty write to a deferred table
+        # raises the same clear DatasetError as the single-row path.
+        sample: MutableRow = {}
+        for row in chunk:
             for col in row:
                 if col not in sample:
                     sample[col] = row[col]
         self._sync_columns(sample, auto_create, types=types)
 
-        # Normalize key names now that the columns exist, so a case-mismatched
-        # key (e.g. ['ID'] against an 'id' column) resolves instead of raising
-        # a bare KeyError on the exact-match column collection.
-        keys = [self._get_column_name(k) for k in keys]
+        # Normalize key names now that columns exist, so a case-mismatched key
+        # (e.g. ['ID'] against an 'id' column) resolves.
+        norm_keys = [self._get_column_name(k) for k in keys]
 
-        # Bind names must not collide with a real column: a value column
-        # literally named like the WHERE bind (e.g. '_id') would otherwise
-        # overwrite it, and WHERE/SET sharing the bind would set the column to
-        # the key value. Derive key/value prefixes provably disjoint from
-        # every actual column name and build each param dict with only these
-        # synthetic keys.
+        # Bind names provably disjoint from every real column: a value column
+        # named like a WHERE bind (e.g. '_id') must not collide with it, and
+        # WHERE/SET must not share a bind (which would set the column to the
+        # key value).
         existing = {c.name for c in self.table.columns}
         key_prefix = "k_"
         while any(name.startswith(key_prefix) for name in existing):
@@ -415,108 +447,89 @@ class Table:
             True,
             *(
                 self.table.c[key] == bindparam(f"{key_prefix}{i}")
-                for i, key in enumerate(keys)
+                for i, key in enumerate(norm_keys)
             ),
         )
 
-        updated = 0
-        chunk: list[WriteRow] = []
-        for index, row in enumerate(rows):
-            chunk.append(row)
+        # Group rows by their exact value-column set so a column a row omits is
+        # left untouched instead of NULLed. Unknown value columns (possible via
+        # case) are dropped rather than compiled into the UPDATE.
+        groups: dict[frozenset[str], list[tuple[list[SQLValue], MutableRow]]] = {}
+        for row_ in chunk:
+            normalized = {self._get_column_name(col): val for col, val in row_.items()}
+            key_values: list[SQLValue] = []
+            for key in norm_keys:
+                if key not in normalized:
+                    raise SchemaError(f"Row is missing key column: {key!r}")
+                key_values.append(normalized.pop(key))
+            value_dict = {
+                col: val for col, val in normalized.items() if self.has_column(col)
+            }
+            groups.setdefault(frozenset(value_dict), []).append(
+                (key_values, value_dict)
+            )
 
-            # Update when chunk_size is fulfilled or this is the last row
-            if len(chunk) == chunk_size or index == len(rows) - 1:
-                # Group rows by their exact value-column set so a column a row
-                # omits is left untouched instead of NULLed. With auto_create=False
-                # an unknown value column was never created, so drop it (like
-                # update()) rather than compile an UPDATE for it. Store the
-                # (key values, value dict) per row; the synthetic bind names
-                # are assigned per group so ordering is consistent.
-                groups: dict[
-                    frozenset[str], list[tuple[list[SQLValue], MutableRow]]
-                ] = {}
-                for row_ in chunk:
-                    normalized = {
-                        self._get_column_name(col): val for col, val in row_.items()
-                    }
-                    key_values: list[SQLValue] = []
-                    for key in keys:
-                        if key not in normalized:
-                            raise SchemaError(f"Row is missing key column: {key!r}")
-                        key_values.append(normalized.pop(key))
-                    value_dict = {
-                        col: val
-                        for col, val in normalized.items()
-                        if self.has_column(col)
-                    }
-                    groups.setdefault(frozenset(value_dict), []).append(
-                        (key_values, value_dict)
-                    )
-
-                def count_matched(group_rows: list[MutableRow]) -> int:
-                    # Sub-batch the existence check (SQLite caps the
-                    # expression tree at 1000) and union the matched key
-                    # tuples so duplicate keys are counted once, not summed.
-                    matched: set[tuple[SQLValue, ...]] = set()
-                    step = self._EXISTS_CHECK_BATCH
-                    for start in range(0, len(group_rows), step):
-                        sub = group_rows[start : start + step]
-                        clause = or_(
+        def count_matched(group_rows: list[MutableRow]) -> int:
+            # Sub-batch the existence check (SQLite caps the expression tree at
+            # 1000) and union the matched key tuples so duplicate keys count
+            # once, not summed.
+            matched: set[tuple[SQLValue, ...]] = set()
+            step = self._EXISTS_CHECK_BATCH
+            for start in range(0, len(group_rows), step):
+                sub = group_rows[start : start + step]
+                clause = or_(
+                    *(
+                        and_(
                             *(
-                                and_(
-                                    *(
-                                        self.table.c[key] == gr[f"{key_prefix}{i}"]
-                                        for i, key in enumerate(keys)
-                                    )
-                                )
-                                for gr in sub
+                                self.table.c[key] == gr[f"{key_prefix}{i}"]
+                                for i, key in enumerate(norm_keys)
                             )
                         )
-                        rp2 = self.db.executable.execute(
-                            select(*(self.table.c[k] for k in keys)).where(clause)
-                        )
-                        matched.update(tuple(r) for r in rp2)
-                    return len(matched)
-
-                for value_cols, group_items in groups.items():
-                    cols_list = sorted(value_cols)
-                    group_rows: list[MutableRow] = []
-                    for key_values, value_dict in group_items:
-                        group_row: MutableRow = {
-                            f"{key_prefix}{i}": v for i, v in enumerate(key_values)
-                        }
-                        for j, col in enumerate(cols_list):
-                            group_row[f"{val_prefix}{j}"] = value_dict[col]
-                        group_rows.append(group_row)
-
-                    if not cols_list:
-                        # A row carrying only key columns has nothing to SET;
-                        # mirror update()'s `if not len(row)` case and count
-                        # the matched keys instead of compiling an empty
-                        # (invalid) UPDATE.
-                        updated += count_matched(group_rows)
-                        continue
-
-                    stmt = (
-                        self.table.update()
-                        .where(where)
-                        .values(
-                            {
-                                col: bindparam(f"{val_prefix}{j}", required=False)
-                                for j, col in enumerate(cols_list)
-                            }
-                        )
+                        for gr in sub
                     )
-                    rp = self.db.executable.execute(stmt, group_rows)
-                    if rp.supports_sane_multi_rowcount():
-                        updated += rp.rowcount
-                    else:
-                        # Live on psycopg2 (PostgreSQL), which reports no
-                        # reliable executemany rowcount: count the distinct
-                        # matched key tuples instead (see docstring).
-                        updated += count_matched(group_rows)
-                self.db._auto_commit()
-                chunk = []
+                )
+                rp2 = self.db.executable.execute(
+                    select(*(self.table.c[k] for k in norm_keys)).where(clause)
+                )
+                matched.update(tuple(r) for r in rp2)
+            return len(matched)
+
+        updated = 0
+        for value_cols, group_items in groups.items():
+            cols_list = sorted(value_cols)
+            group_rows: list[MutableRow] = []
+            for key_values, value_dict in group_items:
+                group_row: MutableRow = {
+                    f"{key_prefix}{i}": v for i, v in enumerate(key_values)
+                }
+                for j, col in enumerate(cols_list):
+                    group_row[f"{val_prefix}{j}"] = value_dict[col]
+                group_rows.append(group_row)
+
+            if not cols_list:
+                # Key-only rows have nothing to SET; count the matched keys
+                # instead of compiling an invalid empty UPDATE.
+                updated += count_matched(group_rows)
+                continue
+
+            stmt = (
+                self.table.update()
+                .where(where)
+                .values(
+                    {
+                        col: bindparam(f"{val_prefix}{j}", required=False)
+                        for j, col in enumerate(cols_list)
+                    }
+                )
+            )
+            rp = self.db.executable.execute(stmt, group_rows)
+            if rp.supports_sane_multi_rowcount():
+                updated += rp.rowcount
+            else:
+                # psycopg2 (PostgreSQL) reports no reliable executemany
+                # rowcount: count the distinct matched key tuples instead.
+                updated += count_matched(group_rows)
+        self.db._auto_commit()
         return updated
 
     def upsert(

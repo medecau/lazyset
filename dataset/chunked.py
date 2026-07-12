@@ -70,7 +70,7 @@ class ChunkedInsert(_Chunker):
         # instead of being NULLed out to a lifetime field union.
         if self.callback is not None:
             self.callback(self.queue)
-        self.table.insert_many(self.queue)
+        self.table.insert(self.queue)
         super().flush()
 
 
@@ -105,5 +105,5 @@ class ChunkedUpdate(_Chunker):
         # insert_many).
         if self.callback is not None:
             self.callback(self.queue)
-        self.table.update_many(self.queue, self.keys)
+        self.table.update(self.queue, self.keys)
         super().flush()

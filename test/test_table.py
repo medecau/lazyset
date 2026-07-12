@@ -179,9 +179,9 @@ def test_write_method_return_values(db, table):
     )
     assert pk == len(TEST_DATA) + 1
 
-    # No primary key column: insert() returns True (empty-tuple branch).
+    # No primary key column: insert() returns None (no PK to report).
     no_pk_table = db.create_table("no_pk_writes", primary_id=False)
-    assert no_pk_table.insert({"a": 1}) is True
+    assert no_pk_table.insert({"a": 1}) is None
 
     # insert_ignore() on a matching existing row returns False.
     assert (
@@ -712,15 +712,41 @@ def test_distinct_case_insensitive(db):
     assert len(rows) == 2, rows
 
 
-def test_insert_many(table):
+def test_insert_iterable(table):
     data = TEST_DATA * 100
-    table.insert_many(data, chunk_size=13)
+    table.insert(data, chunk_size=13)
     assert len(table) == len(data) + len(TEST_DATA), (len(table), len(data))
+
+
+def test_insert_generator_streamed(db):
+    # A generator is consumed streamingly (no whole-input pre-scan) and each
+    # yielded dict is copied, so a reused-buffer generator stores distinct rows.
+    tbl = db["insert_generator"]
+
+    def gen():
+        buf = {}
+        for i in range(5):
+            buf.clear()
+            buf["n"] = i
+            yield buf  # same object each time, mutated in place
+
+    assert tbl.insert(gen(), chunk_size=2) == 5
+    assert sorted(r["n"] for r in tbl) == [0, 1, 2, 3, 4]
+
+
+def test_update_generator_streamed(db):
+    tbl = db["update_generator"]
+    tbl.insert([{"id": i, "n": 0} for i in range(1, 5)])
+    changes = [{"id": 1, "n": 10}, {"id": 3, "n": 30}]
+    updated = tbl.update((row for row in changes), "id")
+    assert updated == 2
+    assert tbl.find_one(id=1)["n"] == 10
+    assert tbl.find_one(id=3)["n"] == 30
 
 
 def test_insert_many_returns_count(db):
     tbl = db["insert_many_returns_count"]
-    result = tbl.insert_many([{"n": i} for i in range(5)], chunk_size=2)
+    result = tbl.insert([{"n": i} for i in range(5)], chunk_size=2)
     assert result == 5
 
 
@@ -739,7 +765,7 @@ def test_insert_many_chunk_size_flush(db):
 
     conn.execute = spy
     try:
-        tbl.insert_many([{"n": i} for i in range(4)], chunk_size=2)
+        tbl.insert([{"n": i} for i in range(4)], chunk_size=2)
     finally:
         del conn.execute
 
@@ -755,7 +781,7 @@ def test_insert_many_case_insensitive_column(db):
     # not silently stored as NULL because the executemany param went unused.
     tbl = db["insert_many_case_col"]
     tbl.insert({"name": "seed"})
-    tbl.insert_many([{"NAME": "x"}])
+    tbl.insert([{"NAME": "x"}])
     rows = list(tbl.find(name="x"))
     assert len(rows) == 1, rows
 
@@ -766,7 +792,7 @@ def test_insert_many_preserves_server_default(db):
     # overriding the server_default.
     tbl = db["insert_many_server_default"]
     tbl.create_column("status", db.types.text, server_default="active")
-    tbl.insert_many([{"id": 1, "status": "custom"}, {"id": 2}])
+    tbl.insert([{"id": 1, "status": "custom"}, {"id": 2}])
     assert tbl.find_one(id=1)["status"] == "custom"
     assert tbl.find_one(id=2)["status"] == "active"
 
@@ -843,26 +869,26 @@ def test_chunked_insert_preserves_default_across_chunks(db):
 
 def test_chunked_update_groups_by_field_set(db):
     # Two queued rows sharing the same field set must be batched into a
-    # single table.update_many() call, not one call per row.
+    # single table.update() call, not one call per row.
     tbl = db["chunk_update_groups"]
-    tbl.insert_many([{"id": 1, "n": 1}, {"id": 2, "n": 2}])
+    tbl.insert([{"id": 1, "n": 1}, {"id": 2, "n": 2}])
 
     calls = []
-    original_update_many = tbl.update_many
+    original_update = tbl.update
 
     def spy(rows, keys, **kwargs):
         rows = list(rows)
         calls.append(len(rows))
-        return original_update_many(rows, keys, **kwargs)
+        return original_update(rows, keys, **kwargs)
 
-    tbl.update_many = spy
+    tbl.update = spy
     try:
         updater = chunked.ChunkedUpdate(tbl, ["id"])
         updater.update({"id": 1, "n": 10})
         updater.update({"id": 2, "n": 20})
         updater.flush()
     finally:
-        del tbl.update_many
+        del tbl.update
 
     assert calls == [2], calls
     assert tbl.find_one(id=1)["n"] == 10
@@ -871,7 +897,7 @@ def test_chunked_update_groups_by_field_set(db):
 
 def test_chunked_update_callback(db):
     tbl = db["chunked_update_cb"]
-    tbl.insert_many([{"id": 1, "n": 1}, {"id": 2, "n": 2}, {"id": 3, "n": 3}])
+    tbl.insert([{"id": 1, "n": 1}, {"id": 2, "n": 2}, {"id": 3, "n": 3}])
     seen = []
 
     def callback(queue):
@@ -890,10 +916,10 @@ def test_chunked_update_callback(db):
     assert tbl.find_one(id=3)["n"] == 30
 
 
-def test_update_many(db):
-    tbl = db["update_many_test"]
-    tbl.insert_many([{"temp": 10}, {"temp": 20}, {"temp": 30}])
-    tbl.update_many([{"id": 1, "temp": 50}, {"id": 3, "temp": 50}], "id")
+def test_update_iterable(db):
+    tbl = db["update_iterable_test"]
+    tbl.insert([{"temp": 10}, {"temp": 20}, {"temp": 30}])
+    tbl.update([{"id": 1, "temp": 50}, {"id": 3, "temp": 50}], "id")
 
     # Ensure data has been updated.
     assert tbl.find_one(id=1)["temp"] == tbl.find_one(id=3)["temp"]
@@ -901,12 +927,12 @@ def test_update_many(db):
 
 def test_update_many_heterogeneous_columns(db):
     tbl = db["update_many_hetero"]
-    tbl.insert_many([{"id": 1, "x": "x1", "y": "y1"}, {"id": 2, "x": "x2", "y": "y2"}])
+    tbl.insert([{"id": 1, "x": "x1", "y": "y1"}, {"id": 2, "x": "x2", "y": "y2"}])
 
     # Rows with different value-column sets must be grouped and updated with
     # separate statements: a column missing from a given row's dict must be
     # left untouched, not bound as NULL.
-    tbl.update_many([{"id": 1, "x": "x1-new"}, {"id": 2, "y": "y2-new"}], "id")
+    tbl.update([{"id": 1, "x": "x1-new"}, {"id": 2, "y": "y2-new"}], "id")
 
     row1 = tbl.find_one(id=1)
     row2 = tbl.find_one(id=2)
@@ -918,13 +944,11 @@ def test_update_many_heterogeneous_columns(db):
 
 def test_update_many_heterogeneous_columns_across_chunks(db):
     tbl = db["update_many_hetero_chunks"]
-    tbl.insert_many([{"id": 1, "x": "x1", "y": "y1"}, {"id": 2, "x": "x2", "y": "y2"}])
+    tbl.insert([{"id": 1, "x": "x1", "y": "y1"}, {"id": 2, "x": "x2", "y": "y2"}])
 
     # chunk_size=1 forces each row into its own flushed chunk; the column
     # grouping must not leak across chunks either.
-    tbl.update_many(
-        [{"id": 1, "x": "x1-new"}, {"id": 2, "y": "y2-new"}], "id", chunk_size=1
-    )
+    tbl.update([{"id": 1, "x": "x1-new"}, {"id": 2, "y": "y2-new"}], "id", chunk_size=1)
 
     row1 = tbl.find_one(id=1)
     row2 = tbl.find_one(id=2)
@@ -939,8 +963,8 @@ def test_update_many_auto_creates_columns(db):
     # were dead and a new value column raised a raw CompileError. With
     # auto_create defaulting on, the column must be created before the UPDATE.
     tbl = db["update_many_autocreate"]
-    tbl.insert_many([{"id": 1}, {"id": 2}])
-    tbl.update_many([{"id": 1, "note": "hello"}], "id")
+    tbl.insert([{"id": 1}, {"id": 2}])
+    tbl.update([{"id": 1, "note": "hello"}], "id")
     assert "note" in tbl.columns
     assert tbl.find_one(id=1)["note"] == "hello"
 
@@ -957,14 +981,14 @@ def test_update_many_on_deferred_table_raises(db):
         match=r"^Cannot write to 'deferred_update_many': "
         r"no columns to create it with\.$",
     ):
-        tbl.update_many([{}], ["id"])
+        tbl.update([{}], ["id"])
 
 
 def test_update_many_missing_key_column_raises(db):
     tbl = db["update_many_missing_key"]
-    tbl.insert_many([{"id": 1, "n": 1}])
+    tbl.insert([{"id": 1, "n": 1}])
     with pytest.raises(DatasetError, match=r"^Row is missing key column: 'id'$"):
-        tbl.update_many([{"n": 2}], "id")
+        tbl.update([{"n": 2}], "id")
 
 
 def test_update_many_value_column_named_like_key(db):
@@ -972,8 +996,8 @@ def test_update_many_value_column_named_like_key(db):
     # collide with the key bind: the rename overwrote it and WHERE/SET shared
     # the bind, so the column was set to the key value instead of its own.
     tbl = db["update_many_underscore_col"]
-    tbl.insert_many([{"id": 1, "_id": "keep-me"}, {"id": 2, "_id": "keep-me-2"}])
-    tbl.update_many([{"id": 1, "_id": "updated"}], "id")
+    tbl.insert([{"id": 1, "_id": "keep-me"}, {"id": 2, "_id": "keep-me-2"}])
+    tbl.update([{"id": 1, "_id": "updated"}], "id")
     assert tbl.find_one(id=1)["_id"] == "updated"
     assert tbl.find_one(id=2)["_id"] == "keep-me-2"
 
@@ -982,8 +1006,8 @@ def test_update_many_case_insensitive_key(db):
     # A case-mismatched key (['ID'] against an 'id' column) must resolve and
     # update the row, not KeyError on the exact-match column collection.
     tbl = db["update_many_case_key"]
-    tbl.insert_many([{"id": 1, "n": 1}, {"id": 2, "n": 2}])
-    tbl.update_many([{"ID": 1, "n": 10}], ["ID"])
+    tbl.insert([{"id": 1, "n": 1}, {"id": 2, "n": 2}])
+    tbl.update([{"ID": 1, "n": 10}], ["ID"])
     assert tbl.find_one(id=1)["n"] == 10
     assert tbl.find_one(id=2)["n"] == 2
 
@@ -993,28 +1017,28 @@ def test_update_many_key_only_rows(db):
     # update()'s `if not len(row)` case it must count the matched keys
     # instead of compiling an invalid empty UPDATE.
     tbl = db["update_many_key_only"]
-    tbl.insert_many([{"id": 1, "v": "a"}, {"id": 2, "v": "b"}])
-    result = tbl.update_many([{"id": 1}, {"id": 2, "v": "B"}], "id")
+    tbl.insert([{"id": 1, "v": "a"}, {"id": 2, "v": "b"}])
+    result = tbl.update([{"id": 1}, {"id": 2, "v": "B"}], "id")
     assert result == 2
     assert tbl.find_one(id=1)["v"] == "a"
     assert tbl.find_one(id=2)["v"] == "B"
     # A key-only row matching nothing counts zero.
-    assert tbl.update_many([{"id": 99}], "id") == 0
+    assert tbl.update([{"id": 99}], "id") == 0
 
 
 def test_update_many_chunk_size_flush(db):
     tbl = db["update_many_chunk_flush"]
-    tbl.insert_many([{"id": 1, "n": 1}, {"id": 2, "n": 2}])
+    tbl.insert([{"id": 1, "n": 1}, {"id": 2, "n": 2}])
     # chunk_size=1 forces a flush after every row, not just at the end.
-    tbl.update_many([{"id": 1, "n": 10}, {"id": 2, "n": 20}], "id", chunk_size=1)
+    tbl.update([{"id": 1, "n": 10}, {"id": 2, "n": 20}], "id", chunk_size=1)
     assert tbl.find_one(id=1)["n"] == 10
     assert tbl.find_one(id=2)["n"] == 20
 
 
 def test_update_many_returns_count(db):
     tbl = db["update_many_returns_count"]
-    tbl.insert_many([{"id": 1, "n": 1}, {"id": 2, "n": 2}, {"id": 3, "n": 3}])
-    result = tbl.update_many([{"id": 1, "n": 10}, {"id": 2, "n": 20}], "id")
+    tbl.insert([{"id": 1, "n": 1}, {"id": 2, "n": 2}, {"id": 3, "n": 3}])
+    result = tbl.update([{"id": 1, "n": 10}, {"id": 2, "n": 20}], "id")
     assert result == 2
 
 
@@ -1023,8 +1047,8 @@ def test_update_many_returns_count_across_column_groups(db):
     # within the same flush; the returned count must sum across all of
     # them, not just the last group executed.
     tbl = db["update_many_returns_count_groups"]
-    tbl.insert_many([{"id": 1, "x": "x1", "y": "y1"}, {"id": 2, "x": "x2", "y": "y2"}])
-    result = tbl.update_many([{"id": 1, "x": "x1-new"}, {"id": 2, "y": "y2-new"}], "id")
+    tbl.insert([{"id": 1, "x": "x1", "y": "y1"}, {"id": 2, "x": "x2", "y": "y2"}])
+    result = tbl.update([{"id": 1, "x": "x1-new"}, {"id": 2, "y": "y2-new"}], "id")
     assert result == 2
 
 
@@ -1035,7 +1059,7 @@ def test_update_many_returns_count_without_sane_multi_rowcount(db):
     # test_delete_returns_count_without_sane_rowcount; the count becomes
     # "distinct matched key tuples", so the repeated id=1 counts once.
     tbl = db["update_many_no_sane_multi"]
-    tbl.insert_many([{"id": 1, "n": 1}, {"id": 2, "n": 2}, {"id": 3, "n": 3}])
+    tbl.insert([{"id": 1, "n": 1}, {"id": 2, "n": 2}, {"id": 3, "n": 3}])
 
     conn = db.executable
     original_execute = conn.execute
@@ -1052,7 +1076,7 @@ def test_update_many_returns_count_without_sane_multi_rowcount(db):
 
     conn.execute = spy
     try:
-        result = tbl.update_many(
+        result = tbl.update(
             [{"id": 1, "n": 10}, {"id": 1, "n": 11}, {"id": 2, "n": 20}], "id"
         )
     finally:
@@ -1067,7 +1091,7 @@ def test_update_many_returns_count_without_sane_multi_rowcount(db):
 
 def test_update_many_chunk_size_flush_count(db):
     tbl = db["update_many_chunk_flush_count"]
-    tbl.insert_many([{"id": i, "n": i} for i in range(4)])
+    tbl.insert([{"id": i, "n": i} for i in range(4)])
 
     conn = db.executable
     original_execute = conn.execute
@@ -1079,7 +1103,7 @@ def test_update_many_chunk_size_flush_count(db):
 
     conn.execute = spy
     try:
-        tbl.update_many([{"id": i, "n": i * 10} for i in range(4)], "id", chunk_size=2)
+        tbl.update([{"id": i, "n": i * 10} for i in range(4)], "id", chunk_size=2)
     finally:
         del conn.execute
 
@@ -1094,7 +1118,7 @@ def _write_row(tbl, method_name, row, keys, **kwargs):
     elif method_name == "insert_ignore":
         tbl.insert_ignore(row, keys, **kwargs)
     elif method_name == "insert_many":
-        tbl.insert_many([row], **kwargs)
+        tbl.insert([row], **kwargs)
     elif method_name == "update":
         tbl.update(row, keys, **kwargs)
     elif method_name == "upsert":
@@ -1189,7 +1213,7 @@ def test_ensure_creates_index(db):
 
 def test_chunked_update(db):
     tbl = db["update_many_test"]
-    tbl.insert_many(
+    tbl.insert(
         [
             {"temp": 10, "location": "asdf"},
             {"temp": 20, "location": "qwer"},
@@ -1268,7 +1292,7 @@ def test_upsert_many_case_insensitive_key(db):
     # existing row, not KeyError on the exact-match column collection nor
     # silently reroute the row to a duplicate INSERT.
     tbl = db["upsert_many_case_key"]
-    tbl.insert_many([{"id": 1, "n": 1}])
+    tbl.insert([{"id": 1, "n": 1}])
     tbl.upsert_many([{"ID": 1, "n": 10}], ["ID"])
     assert len(tbl) == 1
     assert tbl.find_one(id=1)["n"] == 10
@@ -1276,7 +1300,7 @@ def test_upsert_many_case_insensitive_key(db):
 
 def test_upsert_many_heterogeneous_columns_batched(db):
     tbl = db["upsert_many_hetero_batched"]
-    tbl.insert_many([{"id": 1, "x": "x1", "y": "y1"}, {"id": 2, "x": "x2", "y": "y2"}])
+    tbl.insert([{"id": 1, "x": "x1", "y": "y1"}, {"id": 2, "x": "x2", "y": "y2"}])
 
     # Regression check: the batched rewrite must still route through
     # update_many's per-group SET clause (A1's fix), not NULL out columns
@@ -1330,7 +1354,7 @@ def test_upsert_many_default_chunk_size_does_not_crash_on_sqlite(db):
 
 def test_upsert_many_returns_count(db):
     tbl = db["upsert_many_returns_count"]
-    tbl.insert_many([{"id": 1, "n": 1}])
+    tbl.insert([{"id": 1, "n": 1}])
     result = tbl.upsert_many([{"id": 1, "n": 10}, {"id": 2, "n": 20}], "id")
     assert result == 2  # one update, one insert
 
@@ -1355,7 +1379,7 @@ def test_upsert_many_returns_count_across_multiple_batches(db):
     # inserts. The returned count must accumulate across every batch, not
     # just reflect the last one.
     tbl = db["upsert_many_count_multi_batch"]
-    tbl.insert_many([{"id": 1, "n": 1}, {"id": 2, "n": 2}])
+    tbl.insert([{"id": 1, "n": 1}, {"id": 2, "n": 2}])
     result = tbl.upsert_many(
         [
             {"id": 1, "n": 10},
@@ -1450,7 +1474,7 @@ def test_upsert_many_duplicate_data_raises(db):
     # values cannot succeed; it must surface as a clear DatasetError, not a
     # raw IntegrityError (and never be swallowed).
     tbl = db["upsert_many_duplicate_data"]
-    tbl.insert_many([{"a": 1, "v": "x"}, {"a": 1, "v": "y"}])
+    tbl.insert([{"a": 1, "v": "x"}, {"a": 1, "v": "y"}])
     with pytest.raises(DatasetError, match="duplicate values"):
         tbl.upsert_many([{"a": 2, "v": "z"}], ["a"])
 
