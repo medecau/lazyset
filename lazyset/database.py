@@ -13,9 +13,9 @@ from sqlalchemy.schema import MetaData
 from sqlalchemy.sql import text
 from sqlalchemy.sql.expression import Executable
 
-from dataset.table import Table
-from dataset.types import ColumnType, Types
-from dataset.util import (
+from lazyset.table import Table
+from lazyset.types import ColumnType, Types
+from lazyset.util import (
     QUERY_STEP,
     DatasetError,
     Results,

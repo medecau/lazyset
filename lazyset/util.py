@@ -55,7 +55,7 @@ def convert_row(factory: RowFactory, row: SARow[Any]) -> Row:
 
 
 class DatasetError(Exception):
-    """Base class for every error raised by dataset."""
+    """Base class for every error raised by lazyset."""
 
 
 class QueryError(DatasetError):

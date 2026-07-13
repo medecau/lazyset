@@ -13,14 +13,14 @@ from sqlalchemy.schema import Table as SQLATable
 from sqlalchemy.sql.dml import Delete, Insert, Update
 from sqlalchemy.types import BIGINT, TEXT, Unicode
 
-from dataset import (
+from lazyset import (
     DatasetError,
     NoSuchColumnError,
     QueryError,
     SchemaError,
     connect,
 )
-from dataset.util import index_name
+from lazyset.util import index_name
 
 from .sample_data import TEST_CITY_1, TEST_CITY_2, TEST_DATA
 
@@ -1820,7 +1820,7 @@ def test_create_index_merges_mysql_length(db, monkeypatch):
     # The auto-computed 10-char prefix for text/binary columns must be merged
     # with a caller-supplied mysql_length, not clobbered by it. SQLite ignores
     # mysql_length at DDL time, so observe the kwargs handed to Index instead.
-    import dataset.table as table_mod
+    import lazyset.table as table_mod
 
     tbl = db["idx_mysql_length"]
     tbl.create_column("a", db.types.text)

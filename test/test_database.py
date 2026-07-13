@@ -10,9 +10,9 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
-from dataset import DatasetError, SchemaError, connect
-from dataset.database import Database
-from dataset.util import Results, safe_url
+from lazyset import DatasetError, SchemaError, connect
+from lazyset.database import Database
+from lazyset.util import Results, safe_url
 
 from .sample_data import TEST_CITY_1, TEST_DATA
 

@@ -1,19 +1,19 @@
-# dataset
+# lazyset
 
 Lightweight Python library for reading/writing databases as easily as JSON — a thin layer over SQLAlchemy, no ORM models. Supports SQLite (default), PostgreSQL, MySQL. **Design bias: simplicity over features — don't over-engineer.**
 
-**Hard fork of [pudo/dataset](https://github.com/pudo/dataset).** The import name stays `dataset`; the distribution/repo name is `lazyset` (first release 0.1.0). This fork deliberately breaks from upstream: five self-describing write verbs (`insert`/`insert_ignore`/`upsert`/`update`/`delete`, each taking one row **or** any iterable of rows), one honestly-named `auto_create` flag, and loud errors where 2.x was silently wrong. There are no upstream users of the fork to shepherd — see the fork-line policy under Must-follow.
+**Hard fork of [pudo/dataset](https://github.com/pudo/dataset).** The distribution and import name are both `lazyset` (first release 0.1.0). This fork deliberately breaks from upstream: five self-describing write verbs (`insert`/`insert_ignore`/`upsert`/`update`/`delete`, each taking one row **or** any iterable of rows), one honestly-named `auto_create` flag, and loud errors where 2.x was silently wrong. There are no upstream users of the fork to shepherd — see the fork-line policy under Must-follow.
 
 ## Layout
-- `dataset/database.py` — `Database`: connection, transactions, `query()`, `db[name]` / `db.table(...)` accessors
-- `dataset/table.py` — `Table`: CRUD, schema management, filter operators (`_generate_clause`)
-- `dataset/types.py` — type mapping (`Types.guess`), `ColumnType`
-- `dataset/util.py` — `Results`, name normalization, exceptions, type aliases
+- `lazyset/database.py` — `Database`: connection, transactions, `query()`, `db[name]` / `db.table(...)` accessors
+- `lazyset/table.py` — `Table`: CRUD, schema management, filter operators (`_generate_clause`)
+- `lazyset/types.py` — type mapping (`Types.guess`), `ColumnType`
+- `lazyset/util.py` — `Results`, name normalization, exceptions, type aliases
 - `test/` — pytest; `conftest.py` = `db` + `table` fixtures, `sample_data.py` = shared test data, `test_properties.py` = Hypothesis tests for pure helpers
 
 ## Commands
 - Deps/env: `uv` (`uv run`, `uv sync`). Run tests: `make test` (or `uv run pytest`).
-- `make lint` — ruff + `mypy --strict` (only `dataset/` is typed; ruff also checks `test/`). Run before committing.
+- `make lint` — ruff + `mypy --strict` (only `lazyset/` is typed; ruff also checks `test/`). Run before committing.
 - `make format` — apply ruff format. Test another backend with `DATABASE_URL=postgresql://… make test`.
 - Mutation testing: `uv run mutmut run` then `uv run mutmut results` (dev dep). Known-accepted survivor buckets are documented in `CHANGELOG.md` under 2.0.0 — diff against that baseline rather than re-triaging from scratch.
 
@@ -28,10 +28,10 @@ Lightweight Python library for reading/writing databases as easily as JSON — a
   - Let SQLAlchemy bind and render values (bind parameters, type coercion, identifier quoting, dialect literal rendering) — never hand-roll SQL-value serialization.
   - Let the database decide row existence, equality, collation, NULL semantics, server-side defaults, and identifier limits — don't classify/compare in Python where SQL semantics (NULL, type affinity, case-insensitive collation) would differ.
   - A "performance" rewrite that moves such a decision into Python must clear correctness-vs-the-DB as its acceptance bar. Reintroducing a hand-rolled version of what the stack already does correctly is a bug, not an optimization.
-- **Version:** bump with `bump2version`, never edit `dataset/__init__.py` directly.
+- **Version:** bump with `bump2version`, never edit `lazyset/__init__.py` directly.
 
 ## Conventions
-- **Types:** all `dataset/` code passes `mypy --strict` and ships `py.typed`. Use `WriteRow` (`Mapping`) at public boundaries, `MutableRow` (`dict`) internally where mutation happens — copy only at that boundary. `ColumnType` for `primary_type` / `create_column`. Reach for `# type: ignore` only for SQLAlchemy-stub gaps or `**kwargs` forwarding.
+- **Types:** all `lazyset/` code passes `mypy --strict` and ships `py.typed`. Use `WriteRow` (`Mapping`) at public boundaries, `MutableRow` (`dict`) internally where mutation happens — copy only at that boundary. `ColumnType` for `primary_type` / `create_column`. Reach for `# type: ignore` only for SQLAlchemy-stub gaps or `**kwargs` forwarding.
 - **Columns:** match case-insensitively via `_get_column_name()`; `_column_keys` preserves the real DB names.
 - **Errors:** `DatasetError` is the base, `QueryError` for invalid filters; name exception classes with an `Error` suffix.
 - **Python 3.10+:** `X | None`, builtin generics (`list[str]`, `dict[...]`).

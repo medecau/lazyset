@@ -20,8 +20,8 @@ from sqlalchemy.sql.expression import (
     bindparam,
 )
 
-from dataset.types import MYSQL_LENGTH_TYPES, ColumnType, Types
-from dataset.util import (
+from lazyset.types import MYSQL_LENGTH_TYPES, ColumnType, Types
+from lazyset.util import (
     QUERY_STEP,
     DatasetError,
     MutableRow,
@@ -40,7 +40,7 @@ from dataset.util import (
 )
 
 if TYPE_CHECKING:
-    from dataset.database import Database
+    from lazyset.database import Database
 
 log = logging.getLogger(__name__)
 

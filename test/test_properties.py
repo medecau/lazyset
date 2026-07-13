@@ -20,8 +20,8 @@ from hypothesis import assume, example, given
 from hypothesis import strategies as st
 from sqlalchemy.types import BigInteger, Boolean, Date, DateTime, TypeEngine
 
-from dataset.types import ColumnType, Types
-from dataset.util import (
+from lazyset.types import ColumnType, Types
+from lazyset.util import (
     SchemaError,
     ensure_strings,
     index_name,

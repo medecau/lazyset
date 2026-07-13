@@ -52,10 +52,10 @@ Repository = "https://github.com/pudo/dataset"
 Documentation = "https://dataset.readthedocs.io/"
 
 [tool.hatch.version]
-path = "dataset/__init__.py"
+path = "lazyset/__init__.py"
 
 [tool.hatch.build.targets.wheel]
-packages = ["dataset"]
+packages = ["lazyset"]
 
 [tool.pytest.ini_options]
 testpaths = ["test"]

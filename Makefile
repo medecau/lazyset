@@ -11,16 +11,16 @@ test:
 
 .PHONY: lint
 lint:
-	ruff check dataset test
-	mypy --strict dataset
+	ruff check lazyset test
+	mypy --strict lazyset
 
 .PHONY: format
 format:
-	ruff format dataset test
+	ruff format lazyset test
 
 .PHONY: format-check
 format-check:
-	ruff format --check dataset test
+	ruff format --check lazyset test
 
 dists:
 	python -m build

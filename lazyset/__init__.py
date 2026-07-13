@@ -2,9 +2,9 @@ import os
 import warnings
 from typing import Any
 
-from dataset.database import Database
-from dataset.table import Table
-from dataset.util import (
+from lazyset.database import Database
+from lazyset.table import Table
+from lazyset.util import (
     DatasetError,
     FilterValue,
     NoSuchColumnError,

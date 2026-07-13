@@ -1,13 +1,13 @@
 import pytest
 
-import dataset
+import lazyset
 
 from .sample_data import TEST_DATA
 
 
 @pytest.fixture(scope="function")
 def db():
-    db = dataset.connect()
+    db = lazyset.connect()
     yield db
     db._executable.rollback()
     for table in db.tables:

@@ -6,8 +6,10 @@ changes must be reconstructed from revision history.*
 * **0.1.0**: First release as `lazyset` — a hard fork of pudo/dataset. *Five
   self-describing verbs, one honestly-named flag, loud errors where the
   upstream 2.x was silently wrong.* Breaking changes are sanctioned and there
-  is no compatibility shim; the `import dataset` name is unchanged. Changes
-  below are relative to dataset 2.0.0.
+  is no compatibility shim. Changes below are relative to dataset 2.0.0.
+  - **Module renamed** *(breaking)*: the import name is now `lazyset` (was
+    `dataset`) — `import lazyset` / `from lazyset import connect`; the
+    split-name period (PyPI `lazyset`, `import dataset`) is over.
   - **Unified write verbs** *(breaking)*: `insert`, `insert_ignore`, `upsert`,
     `update` and `delete` each take **one `Mapping` or any `Iterable` of
     Mappings** (generators included), dispatched by shape via `@overload`;
