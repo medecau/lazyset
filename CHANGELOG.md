@@ -3,10 +3,11 @@
 *The changelog has only been started with version 0.3.12, previous
 changes must be reconstructed from revision history.*
 
-* **3.0.0**: Fork breakaway API redesign — *five self-describing verbs, one
-  honestly-named flag, loud errors where 2.x was silently wrong.* This is a
-  **hard fork of pudo/dataset**; breaking changes are sanctioned and there is
-  no compatibility shim. `import dataset` is unchanged.
+* **0.1.0**: First release as `lazyset` — a hard fork of pudo/dataset. *Five
+  self-describing verbs, one honestly-named flag, loud errors where the
+  upstream 2.x was silently wrong.* Breaking changes are sanctioned and there
+  is no compatibility shim; the `import dataset` name is unchanged. Changes
+  below are relative to dataset 2.0.0.
   - **Unified write verbs** *(breaking)*: `insert`, `insert_ignore`, `upsert`,
     `update` and `delete` each take **one `Mapping` or any `Iterable` of
     Mappings** (generators included), dispatched by shape via `@overload`;

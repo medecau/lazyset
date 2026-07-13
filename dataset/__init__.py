@@ -38,7 +38,7 @@ __all__ = [
     "WriteRow",
     "connect",
 ]
-__version__ = "3.0.0"
+__version__ = "0.1.0"
 
 
 def connect(

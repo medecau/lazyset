@@ -477,47 +477,6 @@ wheels = [
 ]
 
 [[package]]
-name = "dataset"
-source = { editable = "." }
-dependencies = [
-    { name = "alembic" },
-    { name = "sqlalchemy" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "build" },
-    { name = "cryptography" },
-    { name = "hypothesis" },
-    { name = "mutmut" },
-    { name = "mypy" },
-    { name = "psycopg2-binary" },
-    { name = "pymysql" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
-    { name = "twine" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "alembic", specifier = ">=0.6.2" },
-    { name = "build", marker = "extra == 'dev'" },
-    { name = "cryptography", marker = "extra == 'dev'" },
-    { name = "hypothesis", marker = "extra == 'dev'" },
-    { name = "mutmut", marker = "extra == 'dev'", specifier = ">=3.6.0" },
-    { name = "mypy", marker = "extra == 'dev'" },
-    { name = "psycopg2-binary", marker = "extra == 'dev'" },
-    { name = "pymysql", marker = "extra == 'dev'" },
-    { name = "pytest", marker = "extra == 'dev'" },
-    { name = "pytest-cov", marker = "extra == 'dev'" },
-    { name = "ruff", marker = "extra == 'dev'" },
-    { name = "sqlalchemy", specifier = ">=1.4.0,<3.0.0" },
-    { name = "twine", marker = "extra == 'dev'" },
-]
-provides-extras = ["dev"]
-
-[[package]]
 name = "docutils"
 version = "0.23"
 source = { registry = "https://pypi.org/simple" }
@@ -779,6 +738,47 @@ sdist = { url = "https://files.pythonhosted.org/packages/43/4b/674af6ef2f97d56f0
 wheels = [
     { url = "https://files.pythonhosted.org/packages/81/db/e655086b7f3a705df045bf0933bdd9c2f79bb3c97bfef1384598bb79a217/keyring-25.7.0-py3-none-any.whl", hash = "sha256:be4a0b195f149690c166e850609a477c532ddbfbaed96a404d4e43f8d5e2689f", size = 39160, upload-time = "2025-11-16T16:26:08.402Z" },
 ]
+
+[[package]]
+name = "lazyset"
+source = { editable = "." }
+dependencies = [
+    { name = "alembic" },
+    { name = "sqlalchemy" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "build" },
+    { name = "cryptography" },
+    { name = "hypothesis" },
+    { name = "mutmut" },
+    { name = "mypy" },
+    { name = "psycopg2-binary" },
+    { name = "pymysql" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "ruff" },
+    { name = "twine" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "alembic", specifier = ">=0.6.2" },
+    { name = "build", marker = "extra == 'dev'" },
+    { name = "cryptography", marker = "extra == 'dev'" },
+    { name = "hypothesis", marker = "extra == 'dev'" },
+    { name = "mutmut", marker = "extra == 'dev'", specifier = ">=3.6.0" },
+    { name = "mypy", marker = "extra == 'dev'" },
+    { name = "psycopg2-binary", marker = "extra == 'dev'" },
+    { name = "pymysql", marker = "extra == 'dev'" },
+    { name = "pytest", marker = "extra == 'dev'" },
+    { name = "pytest-cov", marker = "extra == 'dev'" },
+    { name = "ruff", marker = "extra == 'dev'" },
+    { name = "sqlalchemy", specifier = ">=1.4.0,<3.0.0" },
+    { name = "twine", marker = "extra == 'dev'" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "libcst"
