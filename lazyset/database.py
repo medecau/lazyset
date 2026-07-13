@@ -1,3 +1,11 @@
+"""The `Database` connection object.
+
+`Database` owns the engine and thread-local connections, runs transactions
+(`Database.begin` / `Database.commit` / `Database.rollback`), executes raw SQL
+via `Database.query`, and hands out tables through ``db[name]`` /
+`Database.table`.
+"""
+
 import contextlib
 import logging
 import threading
@@ -175,7 +183,7 @@ class Database:
         connection back before re-raising. PostgreSQL aborts the whole
         transaction on error and refuses every later statement until a
         rollback, so without this a *caught* write error would poison the next
-        operation on the same thread. Mirrors :py:meth:`_auto_commit` (the
+        operation on the same thread. Mirrors `_auto_commit` (the
         success path); inside an explicit transaction the user (or ``with
         db:``) owns rollback, so this stays out of the way.
         """
@@ -301,7 +309,7 @@ class Database:
         primary_type: ColumnType | None = None,
         primary_increment: bool | None = None,
     ) -> Table:
-        """Load or create a table and return a :py:class:`Table <dataset.Table>`.
+        """Load or create a table and return a `Table`.
 
         This is the single table accessor; ``db[table_name]`` is shorthand for
         ``db.table(table_name)``. With ``auto_create`` enabled (the default) the
@@ -313,14 +321,13 @@ class Database:
         ``primary_id=False`` for no primary key, or a ``db.types`` value as
         ``primary_type`` (text primary keys are the caller's to keep unique).
         Pass ``must_exist=True`` to require an existing table — a missing table
-        then raises :py:class:`SchemaError <dataset.SchemaError>` instead of
+        then raises `SchemaError` instead of
         being auto-created (use it to read a table you did not create).
 
         Repeated calls return the same cached handle. Requesting a ``primary_id``
         that contradicts the cached handle, or the primary key of an existing
-        database table, raises :py:class:`SchemaError <dataset.SchemaError>`
+        database table, raises `SchemaError`
         rather than silently ignoring the request (the pre-3.0 behaviour).
-        ::
 
             table = db.table('population')
             table = db['population']  # shorthand
@@ -409,7 +416,7 @@ class Database:
         )
 
     def __getitem__(self, table_name: str) -> Table:
-        """Get a table by name — shorthand for :py:meth:`table`."""
+        """Get a table by name — shorthand for `Database.table`."""
         return self.table(table_name)
 
     def _ipython_key_completions_(self) -> list[str]:
@@ -438,7 +445,6 @@ class Database:
         ``_step`` themselves, pass the whole mapping as ``params`` instead.
         ``_step`` sets the result fetch batch size (``None`` fetches all rows in
         one go).
-        ::
 
             statement = 'SELECT user, COUNT(*) c FROM photos GROUP BY user'
             for row in db.query(statement):

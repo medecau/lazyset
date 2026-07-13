@@ -10,6 +10,11 @@ changes must be reconstructed from revision history.*
   - **Module renamed** *(breaking)*: the import name is now `lazyset` (was
     `dataset`) — `import lazyset` / `from lazyset import connect`; the
     split-name period (PyPI `lazyset`, `import dataset`) is over.
+  - **Docs → pdoc** *(dev-facing)*: the Sphinx tree is replaced by pdoc — the
+    API reference is generated from docstrings (`make docs` → `site/`) and
+    published to GitHub Pages by CI, with the quickstart/queries guides folded
+    in as Markdown via pdoc's `.. include::`. `Types` is re-exported at the top
+    level (`lazyset.Types`) so it appears in the generated reference.
   - **Unified write verbs** *(breaking)*: `insert`, `insert_ignore`, `upsert`,
     `update` and `delete` each take **one `Mapping` or any `Iterable` of
     Mappings** (generators included), dispatched by shape via `@overload`;

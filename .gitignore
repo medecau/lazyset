@@ -5,6 +5,7 @@
 .eggs/
 dist/*
 build/*
+site/
 .tox/*
 .vscode/*
 .DS_Store

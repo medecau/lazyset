@@ -1,9 +1,38 @@
+"""lazyset — databases for lazy people.
+
+lazyset makes reading and writing a SQL database as simple as working with a
+JSON file. It is a thin layer over [SQLAlchemy](https://www.sqlalchemy.org/)
+with no ORM models: connect, grab a table, and insert / find plain dicts.
+Tables and columns are created on demand. Works on SQLite (the default),
+PostgreSQL, and MySQL.
+
+```python
+import lazyset
+
+db = lazyset.connect('sqlite:///:memory:')
+table = db['sometable']
+table.insert(dict(name='John Doe', age=37))
+john = table.find_one(name='John Doe')
+```
+
+Start at `connect`, then reach for the five `Table` write verbs
+(`Table.insert`, `Table.insert_ignore`, `Table.upsert`, `Table.update`,
+`Table.delete`) and the read helpers (`Table.find`, `Table.find_one`,
+`Table.count`, `Table.distinct`). The two guides below cover the same ground
+in tutorial form.
+
+.. include:: ../docs/quickstart.md
+
+.. include:: ../docs/queries.md
+"""
+
 import os
 import warnings
 from typing import Any
 
 from lazyset.database import Database
 from lazyset.table import Table
+from lazyset.types import Types
 from lazyset.util import (
     DatasetError,
     FilterValue,
@@ -35,6 +64,7 @@ __all__ = [
     "SQLValue",
     "SchemaError",
     "Table",
+    "Types",
     "WriteRow",
     "connect",
 ]
@@ -50,30 +80,28 @@ def connect(
     sqlite_wal_mode: bool = True,
     on_connect_statements: list[str] | None = None,
 ) -> Database:
-    """Opens a new connection to a database.
+    """Open a new connection to a database.
 
-    *url* can be any valid `SQLAlchemy engine URL`_.  If *url* is not defined
-    it will try to use *DATABASE_URL* from environment variable.  Returns an
-    instance of :py:class:`Database <dataset.Database>`. Additionally,
-    *engine_kwargs* will be directly passed to SQLAlchemy, e.g. set
-    *engine_kwargs={'pool_recycle': 3600}* will avoid `DB connection timeout`_.
-    Set *row_type* to an alternate dict-like class to change the type of
-    container rows are stored in.::
+    *url* can be any valid
+    [SQLAlchemy engine URL](https://docs.sqlalchemy.org/en/latest/core/engines.html#sqlalchemy.create_engine).
+    If *url* is not given it falls back to *DATABASE_URL* from the environment.
+    Returns a `Database`. *engine_kwargs* is passed straight to SQLAlchemy, e.g.
+    *engine_kwargs={'pool_recycle': 3600}* avoids a
+    [DB connection timeout](https://docs.sqlalchemy.org/en/latest/core/pooling.html#setting-pool-recycle).
+    Set *row_type* to an alternate dict-like class to change the container rows
+    are returned in.
 
-        db = dataset.connect('sqlite:///factbook.db')
+    ```python
+    db = lazyset.connect('sqlite:///factbook.db')
+    ```
 
-    One of the main features of `dataset` is to automatically create tables and
-    columns as data is inserted. This behaviour can optionally be disabled via
-    the `auto_create` argument. It can also be overridden in a lot of the
-    data manipulation methods using the `auto_create` flag.
+    One of the main features of lazyset is that it creates tables and columns
+    automatically as data is inserted. This can be disabled with the
+    ``auto_create`` argument, and overridden per call on most write methods.
 
-    If you want to run custom SQLite pragmas on database connect, you can add them
-    to on_connect_statements as a set of strings. You can view a full
-    `list of PRAGMAs here`_.
-
-    .. _SQLAlchemy Engine URL: https://docs.sqlalchemy.org/en/latest/core/engines.html#sqlalchemy.create_engine
-    .. _DB connection timeout: https://docs.sqlalchemy.org/en/latest/core/pooling.html#setting-pool-recycle
-    .. _list of PRAGMAs here: https://www.sqlite.org/pragma.html
+    To run custom SQLite pragmas on connect, pass them as *on_connect_statements*
+    (a list of strings). See the full
+    [list of PRAGMAs here](https://www.sqlite.org/pragma.html).
     """
     if url is None:
         url = os.environ.get("DATABASE_URL", "sqlite://")

@@ -1,3 +1,12 @@
+"""The `Table` object: CRUD, schema management, and query helpers.
+
+`Table` is the workhorse of lazyset. The five write verbs (`Table.insert`,
+`Table.insert_ignore`, `Table.upsert`, `Table.update`, `Table.delete`) each
+take one row **or** any iterable of rows; `Table.find` / `Table.find_one` /
+`Table.count` / `Table.distinct` read them back. Columns and the table itself
+are created on first write when ``auto_create`` is on.
+"""
+
 import logging
 import threading
 import warnings
@@ -207,7 +216,6 @@ class Table:
         — a list, or a generator, consumed streamingly — performs a bulk
         insert in chunks of ``chunk_size`` and returns the number of rows
         inserted.
-        ::
 
             table.insert(dict(title='I am a banana!'))
             table.insert([dict(name='Dolly')] * 10000)
@@ -321,14 +329,13 @@ class Table:
         database decides existence natively via ``INSERT ... ON CONFLICT DO
         NOTHING`` (SQLite/PostgreSQL) or a no-op ``ON DUPLICATE KEY UPDATE``
         (MySQL). ``keys`` is required: it names the conflict arbiter.
-        ::
 
             table.insert_ignore(dict(id=10, title='I am a banana!'), ['id'])
 
         With ``auto_create`` on (the default) a UNIQUE index on exactly
         ``keys`` is created as the arbiter — a no-op when a matching unique
         index or primary key already exists. It raises
-        :py:class:`SchemaError <dataset.SchemaError>` if the table already
+        `SchemaError` if the table already
         holds rows with duplicate ``keys`` values. With ``auto_create=False``
         that unique index (or primary key) must already exist, or the database
         raises.
@@ -488,7 +495,6 @@ class Table:
         A single ``Mapping`` updates by one key set; any other iterable — a
         list, or a generator, consumed streamingly — updates in chunks of
         ``chunk_size``.
-        ::
 
             # update all entries with id matching 10, setting their title
             table.update(dict(id=10, title='I am a banana!'), ['id'])
@@ -497,7 +503,7 @@ class Table:
         Since the same row supplies both the filter (``keys``) and the new
         values, a key column's own value is never changed — it only locates
         the row. New value columns are created per ``auto_create``/``types``,
-        as in :py:meth:`insert() <dataset.Table.insert>`.
+        as in `Table.insert`.
 
         Returns the number of rows matched by ``keys``. On drivers with no
         reliable executemany rowcount (notably psycopg2 on PostgreSQL) the
@@ -686,14 +692,13 @@ class Table:
         on ``keys``, atomically per statement. ``keys`` is required — it names
         the conflict arbiter — and a genuine unique index (or primary key) on
         exactly ``keys`` is what the upsert conflicts on.
-        ::
 
             table.upsert(dict(id=10, title='I am a banana!'), ['id'])
             table.upsert([dict(id=1, n=1), dict(id=2, n=2)], ['id'])
 
         With ``auto_create`` on (the default) that UNIQUE arbiter index is
         created for you (a no-op when a matching one exists), raising
-        :py:class:`SchemaError <dataset.SchemaError>` if the table already
+        `SchemaError` if the table already
         holds rows with duplicate ``keys`` values. With ``auto_create=False``
         the arbiter must already exist, or the database raises.
 
@@ -814,12 +819,11 @@ class Table:
 
         Keyword arguments can be used to add column-based filters. The filter
         criterion will always be equality:
-        ::
 
             table.delete(place='Berlin')
 
         ``where`` is the escape hatch for underscore-named columns, matching
-        :py:meth:`find() <dataset.Table.find>`. If no arguments are given, all
+        `Table.find`. If no arguments are given, all
         records are deleted.
 
         Returns the number of deleted rows.
@@ -950,7 +954,7 @@ class Table:
 
         With ``auto_create=False`` no schema is generated: a row key that is
         not an existing column raises
-        :py:class:`SchemaError <dataset.SchemaError>` naming the offending
+        `SchemaError` naming the offending
         column(s) (rather than being silently dropped), and passing ``types``
         is rejected as a dead argument (nothing will be created for it).
         """
@@ -1158,16 +1162,14 @@ class Table:
         **kwargs: object,
     ) -> None:
         """Create a new column ``name`` of a specified type.
-        ::
 
             table.create_column('created_at', db.types.datetime)
 
         `type` corresponds to an SQLAlchemy type, most easily referenced
-        through ``db.types`` (see :py:class:`Types <dataset.types.Types>`).
+        through ``db.types`` (see `Types`).
         Additional keyword arguments are passed
         to the constructor of `Column`, so that default values, and
         options like `nullable` and `unique` can be set.
-        ::
 
             table.create_column('key', unique=True, nullable=False)
             table.create_column('food', default='banana')
@@ -1183,7 +1185,6 @@ class Table:
         Explicitly create a new column ``name`` with a type that is appropriate
         to store the given example ``value``.  The type is guessed in the same
         way as for the insert method with ``auto_create=True``.
-        ::
 
             table.create_column_by_example('length', 4.2)
 
@@ -1196,7 +1197,6 @@ class Table:
     def drop_column(self, name: str) -> None:
         """
         Drop the column ``name``.
-        ::
 
             table.drop_column('created_at')
 
@@ -1288,12 +1288,11 @@ class Table:
         table and column names. With ``unique``, a UNIQUE index is created
         (under a distinct generated name), gated on an exact-column unique
         index or primary key rather than ``has_index``'s prefix match.
-        ::
 
             table.create_index(['name', 'country'])
 
-        This is also how :py:meth:`upsert() <dataset.Table.upsert>` and
-        :py:meth:`insert_ignore() <dataset.Table.insert_ignore>` obtain their
+        This is also how `Table.upsert` and
+        `Table.insert_ignore` obtain their
         conflict arbiter: under ``auto_create`` they call
         ``create_index(keys, unique=True)`` once. The call is a no-op when a
         matching unique index (or primary key) on exactly ``keys`` already
@@ -1380,18 +1379,17 @@ class Table:
         """Perform a simple search on the table.
 
         Simply pass keyword arguments as ``filter``.
-        ::
 
             results = table.find(country='France')
             results = table.find(country='France', year=1980)
 
-        Using ``_limit``::
+        Using ``_limit``:
 
             # just return the first 10 rows
             results = table.find(country='France', _limit=10)
 
         You can sort the results by single or multiple columns. Append a minus
-        sign to the column name for descending order::
+        sign to the column name for descending order:
 
             # sort results by a column 'year'
             results = table.find(country='France', _order_by='year')
@@ -1401,18 +1399,18 @@ class Table:
         ``_order_by``, ``_limit``, ``_offset``, ``_step`` and ``_streamed``
         are reserved read modifiers; every leading-underscore name is
         reserved. To filter a column whose name starts with an underscore
-        (or otherwise collides), pass it via ``where``::
+        (or otherwise collides), pass it via ``where``:
 
             results = table.find(where={'_id': 5})
 
         Filtering or ordering on a column that does not exist raises
-        :py:class:`NoSuchColumnError <dataset.NoSuchColumnError>`.
+        `NoSuchColumnError`.
 
         You can also submit filters based on criteria other than equality,
-        see :ref:`advanced_filters` for details.
+        see the **Advanced filters** guide for details.
 
         To run more complex queries with JOINs, or to perform GROUP BY-style
-        aggregation, you can also use :py:meth:`db.query() <dataset.Database.query>`
+        aggregation, you can also use `Database.query`
         to run raw SQL queries instead.
         """
         if not self.exists:
@@ -1448,11 +1446,10 @@ class Table:
     ) -> Row | None:
         """Get a single result from the table.
 
-        Works just like :py:meth:`find() <dataset.Table.find>` but returns one
+        Works just like `Table.find` but returns one
         result, or ``None``. ``_offset`` and ``where`` behave as on ``find``;
         the result-streaming modifiers (``_step``/``_streamed``) do not apply
         to a single-row fetch.
-        ::
 
             row = table.find_one(country='United States')
         """
@@ -1486,7 +1483,7 @@ class Table:
         """Return the count of results for the given filter set.
 
         Accepts the same positional clauses, ``where`` escape hatch and
-        keyword filters as :py:meth:`find() <dataset.Table.find>` (but no
+        keyword filters as `Table.find` (but no
         limit/offset).
         """
         if not self.exists:
@@ -1514,7 +1511,6 @@ class Table:
         **kwargs: SQLValue,
     ) -> Results:
         """Return all the unique (distinct) values for the given ``columns``.
-        ::
 
             # returns only one row per year, ignoring the rest
             table.distinct('year')
@@ -1524,7 +1520,7 @@ class Table:
             table.distinct('year', country='China')
 
         ``where`` is the escape hatch for underscore-named filter columns,
-        matching :py:meth:`find() <dataset.Table.find>`.
+        matching `Table.find`.
         """
         if not self.exists:
             return Results(None, row_type=self.db.row_type)
@@ -1561,8 +1557,7 @@ class Table:
         """Return all rows of the table as simple dictionaries.
 
         Allows for iterating over all rows in the table without explicitly
-        calling :py:meth:`find() <dataset.Table.find>`.
-        ::
+        calling `Table.find`.
 
             for row in table:
                 print(row)

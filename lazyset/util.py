@@ -1,3 +1,10 @@
+"""Result iteration, name normalization, exceptions, and the SQL type aliases.
+
+These are the plumbing helpers behind `Database` and `Table`: the `Results`
+row iterator, the `DatasetError` exception family, and the `WriteRow` /
+`SQLValue` type aliases used across the public API.
+"""
+
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from datetime import date, datetime
 from decimal import Decimal
@@ -65,7 +72,7 @@ class QueryError(DatasetError):
 class SchemaError(DatasetError, ValueError):
     """A schema constraint was violated (bad name, missing column to create).
 
-    Inherits :class:`ValueError` as well as :class:`DatasetError` so callers
+    Inherits `ValueError` as well as `DatasetError` so callers
     that historically caught ``ValueError`` on invalid identifiers keep
     working.
     """
@@ -135,7 +142,7 @@ class Results(Iterator[Row]):
     """Wrap a SQLAlchemy ResultProxy as an iterator of dict-like rows.
 
     Also usable as a context manager so the underlying result/connection is
-    released on exit::
+    released on exit:
 
         with table.find(country='France') as rows:
             for row in rows:
@@ -240,7 +247,7 @@ def normalize_table_name(name: str, max_bytes: int | None = None) -> str:
     """Check if the table name is obviously invalid.
 
     ``max_bytes`` follows the same dialect rule as
-    :py:func:`normalize_column_name`: PostgreSQL call sites pass 63; the
+    `normalize_column_name`: PostgreSQL call sites pass 63; the
     default applies only the character cap.
     """
     if not isinstance(name, str):

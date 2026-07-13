@@ -1,3 +1,10 @@
+"""Column type mapping.
+
+`Types.guess` picks an SQLAlchemy column type from a sample value, and the
+class attributes (``db.types.text``, ``db.types.integer``, …) name the types
+used for ``primary_type`` and `Table.create_column`.
+"""
+
 from datetime import date, datetime
 from typing import Any
 

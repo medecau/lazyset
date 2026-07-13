@@ -3,7 +3,7 @@ all: clean test dists
 
 .PHONY: docs
 docs:
-	$(MAKE) -C docs html
+	pdoc ./lazyset -o site/
 
 .PHONY: test
 test:
