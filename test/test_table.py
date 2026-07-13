@@ -199,6 +199,21 @@ def test_write_method_return_values(db, table):
     assert missing.delete() == 0
 
 
+def test_write_error_leaves_connection_usable(db):
+    # A caught write error must not poison the connection for the next
+    # operation. PostgreSQL aborts the whole transaction on any error and
+    # refuses later statements until a rollback; dataset auto-rolls-back a
+    # failed write when it is not inside an explicit transaction, so no manual
+    # rollback is needed to keep going.
+    tbl = db["write_error_recovery"]
+    tbl.insert({"id": 1, "v": 1})
+    with pytest.raises(SQLAlchemyError):
+        tbl.insert({"id": 1, "v": 2})  # duplicate primary key
+    assert tbl.find_one(id=1)["v"] == 1
+    tbl.insert({"id": 2, "v": 2})
+    assert len(tbl) == 2
+
+
 def test_upsert_keys_targeting(db):
     # An empty keys list would match *every* existing row instead of just
     # the intended one, turning every upsert after the first into an update.
@@ -774,7 +789,7 @@ def test_insert_preserves_server_default(db):
     # matching insert(). The old pad-to-union step bound an explicit NULL,
     # overriding the server_default.
     tbl = db["insert_many_server_default"]
-    tbl.create_column("status", db.types.text, server_default="active")
+    tbl.create_column("status", db.types.string(255), server_default="active")
     tbl.insert([{"id": 1, "status": "custom"}, {"id": 2}])
     assert tbl.find_one(id=1)["status"] == "custom"
     assert tbl.find_one(id=2)["status"] == "active"
@@ -801,7 +816,7 @@ def test_insert_preserves_server_default_across_chunks(db):
     # column must fall back to its server_default, not a bound NULL (the bug
     # the old ChunkedInsert lifetime-union padding introduced).
     tbl = db["insert_default_across_chunks"]
-    tbl.create_column("status", db.types.text, server_default="active")
+    tbl.create_column("status", db.types.string(255), server_default="active")
     rows = [{"id": 1, "status": "custom"}, {"id": 2}]
     assert tbl.insert((row for row in rows), chunk_size=1) == 2
     assert tbl.find_one(id=1)["status"] == "custom"
@@ -983,7 +998,7 @@ def test_update_returns_count_without_sane_multi_rowcount(db):
 
 def test_update_chunk_size_flush_count(db):
     tbl = db["update_many_chunk_flush_count"]
-    tbl.insert([{"id": i, "n": i} for i in range(4)])
+    tbl.insert([{"id": i, "n": i} for i in range(1, 5)])
 
     conn = db._executable
     original_execute = conn.execute
@@ -995,7 +1010,7 @@ def test_update_chunk_size_flush_count(db):
 
     conn.execute = spy
     try:
-        tbl.update([{"id": i, "n": i * 10} for i in range(4)], "id", chunk_size=2)
+        tbl.update([{"id": i, "n": i * 10} for i in range(1, 5)], "id", chunk_size=2)
     finally:
         del conn.execute
 
@@ -1095,15 +1110,17 @@ def test_auto_create_creates_unique_arbiter(db):
     assert tbl2.has_index(["a"]) is True
 
     # With auto_create=False and no pre-existing unique index there is no
-    # arbiter to conflict on, so the database raises its own error.
+    # arbiter, so dataset raises SchemaError in Python before any SQL runs --
+    # uniform across backends (SQLite/PostgreSQL would reject natively; MySQL
+    # would otherwise silently insert a duplicate).
     off1 = db["arbiter_insert_ignore_off"]
     off1.insert({"a": 1})
-    with pytest.raises(SQLAlchemyError):
+    with pytest.raises(SchemaError):
         off1.insert_ignore({"a": 2}, ["a"], auto_create=False)
 
     off2 = db["arbiter_upsert_off"]
     off2.insert({"a": 1})
-    with pytest.raises(SQLAlchemyError):
+    with pytest.raises(SchemaError):
         off2.upsert({"a": 2}, ["a"], auto_create=False)
 
 
@@ -1196,7 +1213,9 @@ def test_upsert_batched_statement_count(db):
     # exactly one INSERT ... ON CONFLICT execution. (Replaces a wall-clock
     # smoke check that even the old per-row implementation could pass.)
     tbl = db["upsert_many_batched"]
-    tbl.upsert([{"id": 0, "value": 0}], "id")  # pre-create cols + arbiter
+    tbl.upsert(
+        [{"id": 501, "value": 0}], "id"
+    )  # pre-create cols + arbiter (id outside 1..500)
 
     conn = db._executable
     original_execute = conn.execute
@@ -1221,7 +1240,7 @@ def test_upsert_default_chunk_size_does_not_crash_on_sqlite(db):
     # A full default-sized chunk (1000 rows) must go through in one native
     # upsert executemany without tripping any backend statement limit.
     tbl = db["upsert_many_default_chunk_crash"]
-    rows = [{"id": i, "value": i} for i in range(1000)]
+    rows = [{"id": i, "value": i} for i in range(1, 1001)]
     result = tbl.upsert(rows, "id")
     assert result == 1000
     assert len(tbl) == 1000
@@ -1288,12 +1307,12 @@ def test_upsert_ensure_false_uses_existing_unique_index(db):
 
 
 def test_upsert_ensure_false_needs_unique_index(db):
-    # With auto_create=False no unique arbiter index is created, and the DB-native
-    # upsert has nothing to conflict on: the backend raises its own error
-    # (the old SELECT-then-classify path silently needed no index at all).
+    # With auto_create=False no unique arbiter index is created; dataset
+    # rejects the upsert with SchemaError before any SQL (the old
+    # SELECT-then-classify path silently needed no index at all).
     tbl = db["upsert_many_ensure_false_no_index"]
     tbl.insert({"a": 1})
-    with pytest.raises(SQLAlchemyError):
+    with pytest.raises(SchemaError):
         tbl.upsert([{"a": 2}], ["a"], auto_create=False)
 
 
@@ -1698,7 +1717,7 @@ def test_create_column(db, table):
 def test_create_column_forwards_kwargs(db, table):
     # SQLite's ALTER TABLE requires a default when adding a NOT NULL column.
     table.create_column(
-        "nullable_test", db.types.text, nullable=False, server_default="x"
+        "nullable_test", db.types.string(255), nullable=False, server_default="x"
     )
     assert table.table.c["nullable_test"].nullable is False
 

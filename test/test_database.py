@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from dataset import DatasetError, SchemaError, connect
 from dataset.database import Database
-from dataset.util import Results
+from dataset.util import Results, safe_url
 
 from .sample_data import TEST_CITY_1, TEST_DATA
 
@@ -29,7 +29,9 @@ def test_valid_database_url(db):
 
 
 def test_database_repr(db):
-    assert repr(db) == f"<Database({db.url})>"
+    # repr masks the password via safe_url; on a passwordless SQLite URL
+    # that is a no-op, but PostgreSQL/MySQL URLs carry one.
+    assert repr(db) == f"<Database({safe_url(db.url)})>"
 
 
 def test_database_url_query_string(db):

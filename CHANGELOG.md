@@ -66,6 +66,30 @@ changes must be reconstructed from revision history.*
   - **Exports**: `__all__` now includes `SchemaError`, `NoSuchColumnError`,
     `Results`, `Row`, `RowFactory`, `WriteRow`, `SQLValue`, `FilterValue`;
     dropped `OutRow` and `row_factory`.
+  - **Cross-backend correctness** (suite now verified on PostgreSQL 17 and
+    MySQL 8, not just SQLite):
+    - **`bytes` → binary column** *(behavior change)*: `Types.guess(bytes)` now
+      returns a binary type (`LargeBinary`, exposed as `db.types.binary`)
+      instead of text. Bytes round-tripped through a TEXT column only under
+      SQLite's loose typing; PostgreSQL/MySQL rejected non-UTF-8 bytes.
+    - **Arbiter enforced uniformly** *(behavior change)*: with
+      `auto_create=False` and no matching UNIQUE index or primary key,
+      `insert_ignore`/`upsert` raise `SchemaError` in Python before any SQL.
+      SQLite/PostgreSQL rejected this natively, but MySQL's `ON DUPLICATE KEY
+      UPDATE` would silently insert a duplicate — so the "keys is the arbiter"
+      contract is now guaranteed on every backend. (Raising before execution
+      also avoids leaving PostgreSQL's transaction aborted.)
+    - **MySQL single-row `insert_ignore` return** *(fix)*: reads the inserted
+      primary key from `lastrowid` on MySQL. SQLAlchemy enables
+      `CLIENT_FOUND_ROWS`, so a skipped duplicate reported `rowcount == 1` and a
+      bogus `inserted_primary_key`; the value is now correctly the new key on a
+      genuine insert and `None` on a skip (a non-autoincrement key still
+      degrades to `None`).
+    - **Auto-rollback on write error** *(fix)*: a write that raises outside an
+      explicit transaction now rolls the connection back before re-raising, so
+      a caught error no longer poisons the next operation. PostgreSQL aborts
+      the whole transaction on any error and refuses later statements until a
+      rollback; inside an explicit transaction the user still owns rollback.
 
 * **2.0.0**: Major modernization and type annotations
   - **Type annotations**: Full `mypy --strict` compliance across all modules

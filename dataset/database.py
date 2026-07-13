@@ -1,3 +1,4 @@
+import contextlib
 import logging
 import threading
 from collections.abc import Mapping
@@ -6,7 +7,7 @@ from urllib.parse import parse_qs, urlparse
 
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from sqlalchemy import Connection, Engine, create_engine, event, inspect
+from sqlalchemy import Connection, CursorResult, Engine, create_engine, event, inspect
 from sqlalchemy.engine.reflection import Inspector
 from sqlalchemy.schema import MetaData
 from sqlalchemy.sql import text
@@ -164,6 +165,29 @@ class Database:
         """
         if not self.in_transaction:
             self._executable.commit()
+
+    def _execute_write(
+        self, statement: Executable, parameters: Any = None
+    ) -> CursorResult[Any]:
+        """Execute a write statement, recovering the connection on error.
+
+        On any statement error outside an explicit transaction, roll the
+        connection back before re-raising. PostgreSQL aborts the whole
+        transaction on error and refuses every later statement until a
+        rollback, so without this a *caught* write error would poison the next
+        operation on the same thread. Mirrors :py:meth:`_auto_commit` (the
+        success path); inside an explicit transaction the user (or ``with
+        db:``) owns rollback, so this stays out of the way.
+        """
+        try:
+            if parameters is None:
+                return self._executable.execute(statement)
+            return self._executable.execute(statement, parameters)
+        except Exception:
+            if not self.in_transaction:
+                with contextlib.suppress(Exception):
+                    self._executable.rollback()
+            raise
 
     def begin(self) -> None:
         """Enter a transaction explicitly.

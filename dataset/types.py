@@ -9,6 +9,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     Integer,
+    LargeBinary,
     String,
     Unicode,
     UnicodeText,
@@ -26,6 +27,7 @@ class Types:
     integer = Integer
     string = Unicode
     text = UnicodeText
+    binary = LargeBinary
     float = Float
     bigint = BigInteger
     boolean = Boolean
@@ -57,4 +59,9 @@ class Types:
             return self.date
         elif isinstance(sample, dict):
             return self.json
+        elif isinstance(sample, bytes):
+            # Bytes are binary, not text: a TEXT/VARCHAR column round-trips
+            # them only under SQLite's loose typing — PostgreSQL and MySQL
+            # reject non-UTF-8 bytes. A binary column is portable.
+            return self.binary
         return self.text

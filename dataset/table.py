@@ -229,7 +229,7 @@ class Table:
         types: dict[str, ColumnType] | None,
     ) -> Any:
         synced = self._sync_columns(row, auto_create, types=types)
-        res = self.db._executable.execute(self.table.insert().values(synced))
+        res = self.db._execute_write(self.table.insert().values(synced))
         self.db._auto_commit()
         if res.inserted_primary_key is not None and len(res.inserted_primary_key) > 0:
             return res.inserted_primary_key[0]
@@ -283,7 +283,7 @@ class Table:
             norm = {self._get_column_name(k): v for k, v in row.items()}
             groups.setdefault(frozenset(norm), []).append(norm)
         for group_rows in groups.values():
-            self.db._executable.execute(self.table.insert(), group_rows)
+            self.db._execute_write(self.table.insert(), group_rows)
         self.db._auto_commit()
         return len(chunk)
 
@@ -359,6 +359,21 @@ class Table:
                 raise NoSuchColumnError(f"No such column: {k}")
         if self._check_auto_create(auto_create):
             self.create_index(norm_keys, unique=True)
+        else:
+            # No arbiter is being created, so one must already exist. Enforce
+            # it uniformly in Python: SQLite/PostgreSQL raise natively on a
+            # missing ON CONFLICT arbiter, but MySQL's ON DUPLICATE KEY UPDATE
+            # silently inserts a duplicate when no unique key matches — so
+            # without this check MySQL would quietly corrupt the "keys is the
+            # arbiter" contract. Raising here (before any SQL) also avoids
+            # leaving PostgreSQL's transaction in an aborted state.
+            with self.db.lock:
+                if not self._has_unique_index(norm_keys):
+                    raise SchemaError(
+                        f"{self.name!r} has no UNIQUE index or primary key on "
+                        f"{norm_keys} to serve as the insert_ignore/upsert "
+                        "conflict arbiter; create one or enable auto_create."
+                    )
         return norm_keys
 
     def _ignore_stmt(
@@ -392,10 +407,18 @@ class Table:
     ) -> Any:
         synced = self._sync_columns(row, auto_create, types=types)
         norm_keys = self._make_arbiter(keys, auto_create)
-        res = self.db._executable.execute(self._ignore_stmt(norm_keys, values=synced))
+        res = self.db._execute_write(self._ignore_stmt(norm_keys, values=synced))
         self.db._auto_commit()
-        # Gate on rowcount: only a genuine insert (not a skipped conflict) has
-        # a primary key to report; the ODKU-noop path's PK is driver-dependent.
+        if self.db.is_mysql:
+            # SQLAlchemy enables CLIENT_FOUND_ROWS on MySQL, so a *skipped*
+            # duplicate still reports rowcount 1 and inserted_primary_key
+            # echoes the bound key — both lie. lastrowid is the only reliable
+            # inserted-signal: the new AUTO_INCREMENT id, or 0 when nothing was
+            # inserted. A non-autoincrement primary key can't be read back, so
+            # this degrades to None there (documented driver limitation).
+            return res.lastrowid or None
+        # SQLite/PostgreSQL: DO NOTHING makes rowcount 0 on a skipped conflict,
+        # so a genuine insert is exactly rowcount 1 with a primary key to report.
         if (
             res.rowcount == 1
             and res.inserted_primary_key is not None
@@ -446,7 +469,7 @@ class Table:
             norm = {self._get_column_name(k): v for k, v in row.items()}
             groups.setdefault(frozenset(norm), []).append(norm)
         for group_rows in groups.values():
-            self.db._executable.execute(stmt, group_rows)
+            self.db._execute_write(stmt, group_rows)
         self.db._auto_commit()
         return len(chunk)
 
@@ -498,7 +521,7 @@ class Table:
         if not len(values):
             return self.count(clause)
         stmt = self.table.update().where(clause).values(values)
-        rp = self.db._executable.execute(stmt)
+        rp = self.db._execute_write(stmt)
         self.db._auto_commit()
         if rp.supports_sane_rowcount():
             return rp.rowcount
@@ -603,7 +626,7 @@ class Table:
                         for gr in sub
                     )
                 )
-                rp2 = self.db._executable.execute(
+                rp2 = self.db._execute_write(
                     select(*(self.table.c[k] for k in norm_keys)).where(clause)
                 )
                 matched.update(tuple(r) for r in rp2)
@@ -637,7 +660,7 @@ class Table:
                     }
                 )
             )
-            rp = self.db._executable.execute(stmt, group_rows)
+            rp = self.db._execute_write(stmt, group_rows)
             if rp.supports_sane_multi_rowcount():
                 updated += rp.rowcount
             else:
@@ -745,7 +768,7 @@ class Table:
             stmt = stmts.get(group_cols)
             if stmt is None:
                 stmt = stmts[group_cols] = self._upsert_stmt(group_cols, norm_keys)
-            self.db._executable.execute(stmt, group_rows)
+            self.db._execute_write(stmt, group_rows)
         self.db._auto_commit()
         return len(chunk)
 
@@ -811,7 +834,7 @@ class Table:
         pre = 0
         if not self.db._executable.dialect.supports_sane_rowcount:
             pre = self.count(clause)
-        rp = self.db._executable.execute(stmt)
+        rp = self.db._execute_write(stmt)
         self.db._auto_commit()
         return rp.rowcount if rp.supports_sane_rowcount() else pre
 
