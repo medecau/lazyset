@@ -1,0 +1,135 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+      - run: uv sync --extra dev
+      - name: Lint (ruff + mypy)
+        run: uv run make lint
+      - name: Format check
+        run: uv run make format-check
+      - name: Run SQLite tests
+        env:
+          DATABASE_URL: "sqlite:///:memory:"
+        run: uv run make test
+
+  test-databases:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: dataset
+        ports:
+          - 5432/tcp
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      mysql:
+        image: mysql
+        env:
+          MYSQL_USER: mysql
+          MYSQL_PASSWORD: mysql
+          MYSQL_DATABASE: dataset
+          MYSQL_ROOT_PASSWORD: mysql
+        ports:
+          - 3306/tcp
+        options: >-
+          --health-cmd="mysqladmin ping"
+          --health-interval=5s
+          --health-timeout=2s
+          --health-retries=3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: "3.13"
+      - run: uv sync --extra dev
+      - name: Run PostgreSQL tests
+        timeout-minutes: 10
+        env:
+          DATABASE_URL: "postgresql://postgres:postgres@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/dataset"
+          PGOPTIONS: "-c lock_timeout=10s -c deadlock_timeout=1s"
+        run: uv run make test
+      - name: Configure MySQL lock timeout
+        run: |
+          mysql -h 127.0.0.1 -P ${{ job.services.mysql.ports['3306'] }} \
+            -u root -pmysql \
+            -e "SET GLOBAL innodb_lock_wait_timeout=10;"
+      - name: Run MySQL tests
+        timeout-minutes: 10
+        env:
+          DATABASE_URL: "mysql+pymysql://mysql:mysql@127.0.0.1:${{ job.services.mysql.ports['3306'] }}/dataset?charset=utf8"
+        run: uv run make test
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Build sdist + wheel
+        run: uv build
+      - name: Check metadata
+        run: uvx twine check dist/*
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --extra dev
+      - name: Build API docs
+        run: uv run pdoc ./lazyset -o site/
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/
+
+  deploy-docs:
+    needs: docs
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    # false: a queued Pages deploy should wait, not cancel — a cancelled
+    # deployment can wedge the github-pages environment.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,62 @@
+name: cd
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # Lightweight gate — NOT the full CI matrix. The tag is cut from a green
+    # main, so this only re-checks SQLite and that the artifact builds cleanly.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      # Optional signed-tag verification (default OFF). Fragile — it needs
+      # fetch-depth: 0 on checkout and a reachable public key — and low
+      # marginal value: Trusted Publishing already binds provenance to the
+      # repo + workflow. Enable by importing the signer's key and uncommenting.
+      # - name: Verify signed tag
+      #   run: |
+      #     gpg --import signer.gpg
+      #     git verify-tag "${GITHUB_REF_NAME}"
+      - run: uv sync --extra dev
+      - name: Run SQLite tests
+        env:
+          DATABASE_URL: "sqlite:///:memory:"
+        run: uv run make test
+      - name: Build sdist + wheel
+        run: uv build
+      - name: Check metadata
+        run: uvx twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/lazyset/
+    permissions:
+      id-token: write   # OIDC Trusted Publishing — no PyPI token/secret
+      contents: write   # create the GitHub Release
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release create "${GITHUB_REF_NAME}" --generate-notes
