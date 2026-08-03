@@ -3,7 +3,7 @@
 *The changelog has only been started with version 0.3.12, previous
 changes must be reconstructed from revision history.*
 
-* **0.1.0**: First release as `lazyset` — a hard fork of pudo/dataset. *Five
+* **0.1.0**: First release as `lazyset` — a hard fork of pudo/dataset. *Four
   self-describing verbs, one honestly-named flag, loud errors where the
   upstream 2.x was silently wrong.* Breaking changes are sanctioned and there
   is no compatibility shim. Changes below are relative to dataset 2.0.0.
@@ -15,23 +15,24 @@ changes must be reconstructed from revision history.*
     published to GitHub Pages by CI, with the quickstart/queries guides folded
     in as Markdown via pdoc's `.. include::`. `Types` is re-exported at the top
     level (`lazyset.Types`) so it appears in the generated reference.
-  - **Unified write verbs** *(breaking)*: `insert`, `insert_ignore`, `upsert`,
-    `update` and `delete` each take **one `Mapping` or any `Iterable` of
-    Mappings** (generators included), dispatched by shape via `@overload`;
-    `chunk_size` applies in iterable mode. `insert_many`, `update_many` and
-    `upsert_many` are **removed** — fold them into the singular verb.
-  - **Return values** *(breaking)*: single-row `insert`/`insert_ignore` return
-    the primary key or `None` (skipped / no PK) — no more `True` sentinel;
-    `upsert` returns `int` (rows submitted, single = 1); every iterable write
-    returns `int`.
+  - **Unified write verbs** *(breaking)*: `insert`, `upsert`, `update` and
+    `delete` each take **one `Mapping` or any `Iterable` of Mappings**
+    (generators included), dispatched by shape via `@overload`; `chunk_size`
+    applies in iterable mode. `insert_many`, `update_many` and `upsert_many`
+    are **removed** — fold them into the singular verb.
+  - **Return values** *(breaking)*: single-row `insert` returns the primary key
+    or `None` (no PK) — no more `True` sentinel; `upsert` returns `int` (rows
+    submitted, single = 1); every iterable write returns `int`.
   - **Native `upsert`** *(breaking)*: one algorithm = `ON CONFLICT DO UPDATE`
     (SQLite/PostgreSQL) / `ON DUPLICATE KEY UPDATE` (MySQL) against a required
     unique-arbiter index named by `keys`. The 2.x UPDATE-rowcount-then-INSERT
     path is gone — without an arbiter there is nothing to conflict on, so it no
     longer "updates every non-unique match".
-  - **Native `insert_ignore`** *(breaking)*: `DO NOTHING` / ODKU-noop with a
-    UNIQUE arbiter created under `auto_create`; the COUNT-then-INSERT TOCTOU is
-    gone.
+  - **`insert_ignore` removed** *(breaking)*: it sat confusingly next to
+    `upsert`, which already emits the same conflict-arbitrated statement — call
+    `upsert(row, keys)` with a row carrying only the key columns to get
+    `DO NOTHING` semantics (there is nothing to SET, so a conflicting row is
+    left alone). 2.x's COUNT-then-INSERT TOCTOU goes with it.
   - **`ensure` → `auto_create`** *(breaking)*: renamed on every write, on
     `connect(auto_create=…)` and `Database.auto_create`. `_sync_columns` is now
     strict: with `auto_create=False`, unknown row keys raise `SchemaError`
@@ -43,8 +44,7 @@ changes must be reconstructed from revision history.*
     `normalize_*` failures raise `SchemaError`; closed-database / no-engine
     access raises `DatasetError` (was `RuntimeError`).
   - **Reserved read-modifiers** *(breaking)*: `order_by` → `_order_by` (all
-    modifiers are now leading-underscore, killing column-name shadowing);
-    `_step` disables chunking only on `None` (dropped the `False`/`0` coercion).
+    modifiers are now leading-underscore, killing column-name shadowing).
     A shared validator rejects an unknown or misplaced leading-underscore kwarg
     with `QueryError` across `find`/`find_one`/`count`/`delete`/`distinct`, which
     also gain a `where=` mapping escape hatch. `find_one` gains `_offset`; the
@@ -53,6 +53,14 @@ changes must be reconstructed from revision history.*
     manager; dropped the `next` alias); `OutRow` → `Row`; removed the inert
     `row_factory` module global; the default row container is `dict`
     (was `OrderedDict`).
+  - **`_step` removed** *(breaking)*: `Results` now iterates SQLAlchemy's own
+    result rather than a hand-rolled `fetchmany` loop, so there is no batch
+    size left to tune. It is strictly better than any `_step` value: measured
+    on 200k SQLite rows, peak memory above baseline is 0.02 MB, versus 0.37 MB
+    for the old `fetchmany(1000)` default and 83 MB for `_step=None`, the
+    documented way to materialise a whole table by accident. `QUERY_STEP`,
+    `iter_result_proxy` and `convert_row` are gone with it. Drop the argument;
+    there is no replacement to pass.
   - **`chunked.py` removed** *(breaking)*: `ChunkedInsert` / `ChunkedUpdate` /
     `_Chunker` / `InvalidCallbackError` are gone — use `insert(gen,
     chunk_size=N)` / `update(gen, keys, chunk_size=N)`; a pre-flush `callback`
@@ -65,8 +73,33 @@ changes must be reconstructed from revision history.*
     `must_exist=True` for a missing table, instead of silently ignoring the
     request. `executable` / `op` / `inspect` / `metadata` are privatized
     (`_`-prefixed); `on_connect_statements` is defensively copied.
-  - **`db.query`**: gains a `params` mapping (for bind names that can't be
-    keyword arguments) and a keyword-only `_step`.
+  - **`db.query` writes are committed** *(fix)*: `query()` never called
+    `_auto_commit()`, so a write issued through it was silently discarded — its
+    autobegin transaction was abandoned on close, and on file-backed SQLite the
+    lock it held made the next connection fail with `database is locked`. The
+    commit is gated on `rp.returns_rows`, so reads are untouched. `query()` also
+    gains a `params` mapping, for bind names that can't be keyword arguments.
+  - **`create_column` rejects inert kwargs** *(breaking)*: `default=` and
+    `onupdate=` now raise `SchemaError`. They set a Python-side default on a
+    `Column` object that is discarded when the table is re-reflected, so they
+    never applied; `server_default=` (which the database owns) does. Use
+    `create_index(cols, unique=True)` rather than `unique=True` here — alembic
+    silently skips it on some backends, and the warning that said so is no
+    longer suppressed.
+  - **`Table.__repr__` is side-effect-free** *(fix)*: it read `self.table.name`,
+    which reflects the table and raised `DatasetError` for a missing table under
+    `auto_create=False`. Debuggers and logs call `repr` freely; it now reads the
+    already-normalized `self.name`.
+  - **`Database.__repr__` mask changed** *(cosmetic)*: passwords are masked by
+    SQLAlchemy's `URL.render_as_string(hide_password=True)`, which writes `***`
+    where the hand-rolled `safe_url` wrote `*****`. `safe_url` is removed.
+  - **Removed dead helpers** *(breaking)*: `util.make_sqlite_url` and
+    `Table.create_column_by_example` — neither had a caller, an export, or a
+    mention in the docs. The latter is one line: `create_column(name,
+    db.types.guess(value))`.
+  - **SQLAlchemy 2.0 floor**: the declared requirement was `>=1.4.0`, but the
+    package has never imported under 1.4 (`from sqlalchemy import Connection` is
+    2.0-only) and CI only ever matrixed Python versions. Now `>=2.0,<3.0`.
   - **`create_index`**: a caller-supplied `mysql_length` is merged into the
     auto-computed prefix lengths instead of clobbering them.
   - **`drop_column`**: attempted on every backend — SQLite ≥ 3.35 succeeds — with
@@ -81,23 +114,27 @@ changes must be reconstructed from revision history.*
       instead of text. Bytes round-tripped through a TEXT column only under
       SQLite's loose typing; PostgreSQL/MySQL rejected non-UTF-8 bytes.
     - **Arbiter enforced uniformly** *(behavior change)*: with
-      `auto_create=False` and no matching UNIQUE index or primary key,
-      `insert_ignore`/`upsert` raise `SchemaError` in Python before any SQL.
-      SQLite/PostgreSQL rejected this natively, but MySQL's `ON DUPLICATE KEY
-      UPDATE` would silently insert a duplicate — so the "keys is the arbiter"
-      contract is now guaranteed on every backend. (Raising before execution
-      also avoids leaving PostgreSQL's transaction aborted.)
-    - **MySQL single-row `insert_ignore` return** *(fix)*: reads the inserted
-      primary key from `lastrowid` on MySQL. SQLAlchemy enables
-      `CLIENT_FOUND_ROWS`, so a skipped duplicate reported `rowcount == 1` and a
-      bogus `inserted_primary_key`; the value is now correctly the new key on a
-      genuine insert and `None` on a skip (a non-autoincrement key still
-      degrades to `None`).
-    - **Auto-rollback on write error** *(fix)*: a write that raises outside an
-      explicit transaction now rolls the connection back before re-raising, so
-      a caught error no longer poisons the next operation. PostgreSQL aborts
-      the whole transaction on any error and refuses later statements until a
-      rollback; inside an explicit transaction the user still owns rollback.
+      `auto_create=False` and no matching UNIQUE index or primary key, `upsert`
+      raises `SchemaError` in Python before any SQL. SQLite/PostgreSQL rejected
+      this natively, but MySQL's `ON DUPLICATE KEY UPDATE` would silently insert
+      a duplicate — so the "keys is the arbiter" contract is now guaranteed on
+      every backend. (Raising before execution also avoids leaving PostgreSQL's
+      transaction aborted.)
+    - **Auto-rollback on statement error** *(fix)*: every statement goes through
+      one choke point (`Database._execute`) that rolls the connection back
+      before re-raising, when the error happens outside an explicit transaction.
+      PostgreSQL aborts the whole transaction on any error and refuses later
+      statements until a rollback, so a caught error — a failed write, or a
+      `find()` on a column that vanished — used to poison the next operation on
+      that thread. `find`/`count`/`query` called `connection.execute` directly
+      and had no recovery at all. Inside an explicit transaction the user still
+      owns rollback.
+    - **Single-row rowcount fallbacks removed**: `update()` and `delete()` used
+      to probe `supports_sane_rowcount` and re-COUNT when it was False. It holds
+      on SQLite, PostgreSQL and MySQL, so the fallback was dead code on every
+      supported backend; both now return `rp.rowcount`. The *multi*-row fallback
+      in the chunked update path stays — `supports_sane_multi_rowcount` is
+      genuinely False on psycopg2.
 
 * **2.0.0**: Major modernization and type annotations
   - **Type annotations**: Full `mypy --strict` compliance across all modules

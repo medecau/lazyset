@@ -1,33 +1,37 @@
 
 all: clean test dists
 
+# Every tool is invoked through `uv run` so it resolves from the project
+# environment. A bare `mypy`/`pytest` only works if the venv happens to be
+# active, and `make lint` failed outright with "mypy: No such file or
+# directory" otherwise.
+
 .PHONY: docs
 docs:
-	pdoc ./lazyset -o site/
+	uv run pdoc ./lazyset -o site/
 
 .PHONY: test
 test:
-	pytest
+	uv run pytest
 
 .PHONY: lint
 lint:
-	ruff check lazyset test
-	mypy --strict lazyset
+	uv run ruff check lazyset test
+	uv run mypy --strict lazyset
 
 .PHONY: format
 format:
-	ruff format lazyset test
+	uv run ruff format lazyset test
 
 .PHONY: format-check
 format-check:
-	ruff format --check lazyset test
+	uv run ruff format --check lazyset test
 
 dists:
-	python -m build
+	uv run python -m build
 
 release: dists
-	pip install -q twine
-	twine upload dist/*
+	uv run twine upload dist/*
 
 .PHONY: clean
 clean:
