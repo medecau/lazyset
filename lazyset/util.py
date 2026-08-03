@@ -10,7 +10,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from hashlib import sha1
 from typing import Any
-from urllib.parse import quote, urlencode, urlparse, urlunparse
+from urllib.parse import urlparse, urlunparse
 
 from sqlalchemy import Connection, ResultProxy
 from sqlalchemy.engine import Row as SARow
@@ -91,51 +91,6 @@ def iter_result_proxy(
         if not chunk:
             break
         yield from chunk
-
-
-def make_sqlite_url(
-    path: str,
-    cache: str | None = None,
-    timeout: int | None = None,
-    mode: str | None = None,
-    check_same_thread: bool = True,
-    immutable: bool = False,
-    nolock: bool = False,
-) -> str:
-    # NOTE: this PR
-    # https://gerrit.sqlalchemy.org/c/sqlalchemy/sqlalchemy/+/1474/
-    # added support for URIs in SQLite
-    # The full list of supported URIs is a combination of:
-    # https://docs.python.org/3/library/sqlite3.html#sqlite3.connect
-    # and
-    # https://www.sqlite.org/uri.html
-    params: dict[str, Any] = {}
-    if cache:
-        if cache not in ("shared", "private"):
-            raise ValueError(f"Invalid SQLite cache mode: {cache!r}")
-        params["cache"] = cache
-    if timeout:
-        # Note: if timeout is None, it uses the default timeout
-        params["timeout"] = timeout
-    if mode:
-        if mode not in ("ro", "rw", "rwc"):
-            raise ValueError(f"Invalid SQLite access mode: {mode!r}")
-        params["mode"] = mode
-    if nolock:
-        params["nolock"] = 1
-    if immutable:
-        params["immutable"] = 1
-    if not check_same_thread:
-        params["check_same_thread"] = "false"
-    if not params:
-        # Non-URI form: SQLite reads the raw path, so leave it unencoded
-        # (it would treat %20 literally).
-        return f"sqlite:///{path}"
-    params["uri"] = "true"
-    # URI form: percent-encode the path so ? / # / % in a filename can't
-    # mangle the query or look like an existing escape (keep "/" as the
-    # path separator).
-    return "sqlite:///file:" + quote(path, safe="/") + "?" + urlencode(params)
 
 
 class Results(Iterator[Row]):

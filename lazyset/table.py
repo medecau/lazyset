@@ -58,12 +58,6 @@ class Table:
     """Represents a table in a database and exposes common operations."""
 
     PRIMARY_DEFAULT = "id"
-    # Reserved read-modifier keyword names. A leading-underscore key arriving
-    # in a read helper's ``**kwargs`` is never a column filter; it routes
-    # through ``where=`` or a positional clause instead.
-    _RESERVED_KWARGS = frozenset(
-        {"_limit", "_offset", "_order_by", "_step", "_streamed"}
-    )
     # The OR-of-AND existence check (update's non-sane-multi-rowcount
     # fallback) builds one clause per distinct key; SQLite's default
     # expression-tree depth limit is 1000, so it is sub-batched at this size
@@ -372,9 +366,7 @@ class Table:
         stmt = self.table.update().where(clause).values(values)
         rp = self.db._execute_write(stmt)
         self.db._auto_commit()
-        if rp.supports_sane_rowcount():
-            return rp.rowcount
-        return self.count(clause)
+        return rp.rowcount
 
     def _update_rows(
         self,
@@ -675,15 +667,9 @@ class Table:
             return 0
         clause = self._filter_clause(clauses, where, filters)
         stmt = self.table.delete().where(clause)
-        # On dialects without sane rowcount, rp.rowcount is unreliable; count
-        # the matching rows BEFORE the delete (afterwards they are gone).
-        # Dead on SQLite/PostgreSQL/MySQL (all sane) — parity with update().
-        pre = 0
-        if not self.db._executable.dialect.supports_sane_rowcount:
-            pre = self.count(clause)
         rp = self.db._execute_write(stmt)
         self.db._auto_commit()
-        return rp.rowcount if rp.supports_sane_rowcount() else pre
+        return rp.rowcount
 
     def _reflect_table(self) -> None:
         """Load the tables definition from the database."""
@@ -1021,20 +1007,6 @@ class Table:
             log.debug(f"Column exists: {name}")
             return
         self._sync_table((Column(name, type, **kwargs),))  # type: ignore[arg-type]
-
-    def create_column_by_example(self, name: str, value: SQLValue) -> None:
-        """
-        Explicitly create a new column ``name`` with a type that is appropriate
-        to store the given example ``value``.  The type is guessed in the same
-        way as for the insert method with ``auto_create=True``.
-
-            table.create_column_by_example('length', 4.2)
-
-        If a column of the same name already exists, no action is taken, even
-        if it is not of the type we would have created.
-        """
-        type_ = self.db.types.guess(value)
-        self.create_column(name, type_)
 
     def drop_column(self, name: str) -> None:
         """

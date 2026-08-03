@@ -13,7 +13,7 @@ DB-backed tests.
 import re
 import string
 from datetime import date, datetime
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import urlparse
 
 import pytest
 from hypothesis import assume, example, given
@@ -25,7 +25,6 @@ from lazyset.util import (
     SchemaError,
     ensure_strings,
     index_name,
-    make_sqlite_url,
     normalize_column_key,
     normalize_column_name,
     normalize_table_name,
@@ -422,58 +421,3 @@ def test_index_name_byte_capped():
     assert len(name.encode("utf-8")) <= 63
     assert name.endswith(index_name("t", ["a"])[-16:])
     assert index_name(long_table, ["a"]) != index_name(long_table, ["b"])
-
-
-# ---------------------------------------------------------------------------
-# make_sqlite_url
-# ---------------------------------------------------------------------------
-
-
-@given(path=st.text(min_size=1))
-def test_make_sqlite_url_no_params(path):
-    assert make_sqlite_url(path) == "sqlite:///" + path
-
-
-@given(
-    path=st.text(
-        alphabet=st.characters(exclude_categories=("Cs", "Cc")),
-        min_size=1,
-    ),
-    timeout=st.integers(min_value=1, max_value=10_000),
-    mode=st.sampled_from(["ro", "rw", "rwc"]),
-    cache=st.sampled_from(["shared", "private"]),
-)
-def test_make_sqlite_url_params_roundtrip(path, timeout, mode, cache):
-    url = make_sqlite_url(
-        path,
-        cache=cache,
-        timeout=timeout,
-        mode=mode,
-        immutable=True,
-        nolock=True,
-        check_same_thread=False,
-    )
-    # The path is percent-encoded so ? / # / % in a filename can't mangle the
-    # query; the params still round-trip cleanly.
-    assert url.startswith("sqlite:///file:" + quote(path, safe="/") + "?")
-    q = parse_qs(urlparse(url).query)
-    assert q["uri"] == ["true"]
-    assert q["cache"] == [cache]
-    assert q["timeout"] == [str(timeout)]
-    assert q["mode"] == [mode]
-    assert q["immutable"] == ["1"]
-    assert q["nolock"] == ["1"]
-    assert q["check_same_thread"] == ["false"]
-
-
-def test_make_sqlite_url_encodes_path_metachars():
-    # ? # % in a filename must be percent-encoded so they don't truncate the
-    # URL into a bogus query/fragment.
-    url = make_sqlite_url("weird?name#x.db", timeout=5)
-    parsed = urlparse(url)
-    assert parsed.fragment == ""
-    q = parse_qs(parsed.query)
-    assert q["timeout"] == ["5"]
-    assert q["uri"] == ["true"]
-    assert "%3F" in url  # ?
-    assert "%23" in url  # #

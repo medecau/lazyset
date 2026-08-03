@@ -11,11 +11,19 @@ import logging
 import threading
 from collections.abc import Mapping
 from typing import Any, Literal
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from sqlalchemy import Connection, CursorResult, Engine, create_engine, event, inspect
+from sqlalchemy import (
+    Connection,
+    CursorResult,
+    Engine,
+    create_engine,
+    event,
+    inspect,
+    make_url,
+)
 from sqlalchemy.engine.reflection import Inspector
 from sqlalchemy.schema import MetaData
 from sqlalchemy.sql import text
@@ -55,25 +63,23 @@ class Database:
             engine_kwargs = {}
 
         parsed_url = urlparse(url)
-        # if parsed_url.scheme.lower() in 'sqlite':
-        #     # ref: https://github.com/pudo/dataset/issues/163
-        #     if 'poolclass' not in engine_kwargs:
-        #         engine_kwargs['poolclass'] = StaticPool
 
         self.lock = threading.RLock()
         self.local = threading.local()
         self.connections: dict[int, Connection] = {}
 
-        if len(parsed_url.query):
-            query = parse_qs(parsed_url.query)
-            if schema is None:
-                schema_qs = query.get("schema", query.get("searchpath", []))
-                if len(schema_qs):
-                    schema = schema_qs.pop()
+        if schema is None:
+            # SQLAlchemy already parsed the query string; a repeated key
+            # arrives as a sequence, of which the last value wins.
+            query = make_url(url).query
+            value = query.get("schema", query.get("searchpath"))
+            if isinstance(value, str):
+                schema = value
+            elif value:
+                schema = value[-1]
 
         self.schema = schema
         self.engine: Engine | None = create_engine(url, **engine_kwargs)
-        assert self.engine is not None
         self.is_postgres = self.engine.dialect.name == "postgresql"
         self.is_sqlite = self.engine.dialect.name == "sqlite"
         self.is_mysql = "mysql" in self.engine.dialect.name

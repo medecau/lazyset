@@ -5,12 +5,11 @@ import warnings
 from datetime import datetime
 
 import pytest
-from sqlalchemy import Float
 from sqlalchemy.engine.reflection import Inspector
 from sqlalchemy.exc import ArgumentError, SQLAlchemyError
 from sqlalchemy.schema import Column
 from sqlalchemy.schema import Table as SQLATable
-from sqlalchemy.sql.dml import Delete, Insert, Update
+from sqlalchemy.sql.dml import Insert, Update
 from sqlalchemy.types import BIGINT, TEXT, Unicode
 
 from lazyset import (
@@ -219,37 +218,6 @@ def test_repr(table):
 
 def test_delete_nonexist_entry(table):
     assert table.delete(place="Berlin") == 0, "entry not exist, should fail to delete"
-
-
-def test_delete_returns_count_without_sane_rowcount(table, monkeypatch):
-    # Dead on SQLite/PG/MySQL (all report sane rowcount); parity with
-    # update(). Stub the dialect flag off and hand the DELETE a result whose
-    # rowcount is the unreliable -1: delete() must fall back to the pre-delete
-    # count rather than return the bogus rowcount.
-    monkeypatch.setattr(table.db._executable.dialect, "supports_sane_rowcount", False)
-
-    conn = table.db._executable
-    original_execute = conn.execute
-
-    class _NoSaneResult:
-        rowcount = -1
-
-        def supports_sane_rowcount(self):
-            return False
-
-    def spy(statement, *args, **kwargs):
-        rp = original_execute(statement, *args, **kwargs)
-        return _NoSaneResult() if isinstance(statement, Delete) else rp
-
-    conn.execute = spy
-    try:
-        assert table.delete(place=TEST_CITY_1) == 3
-    finally:
-        del conn.execute
-
-    # The delete still happened via the real execute; only the reported count
-    # was faked.
-    assert table.count(place=TEST_CITY_1) == 0
 
 
 def test_find_one(table):
@@ -1657,22 +1625,6 @@ def test_sync_columns_auto_create_false_and_explicit_types(db):
 
     tbl.insert({"id": 4, "OtherCol": 123}, types={"OtherCol": db.types.text})
     assert isinstance(tbl.table.c["OtherCol"].type, TEXT)
-
-
-@pytest.mark.parametrize(
-    "name,example,expected_type",
-    [
-        ("colfloat", 0.1, Float),
-        ("colint", 1, BIGINT),
-        ("coltext", "test", TEXT),
-        ("colbig", 11111111111, BIGINT),
-        ("colneg", -11111111111, BIGINT),
-    ],
-)
-def test_ensure_column(table, name, example, expected_type):
-    table.create_column_by_example(name, example)
-    assert name in table.table.c, table.table.c
-    assert isinstance(table.table.c[name].type, expected_type), table.table.c[name].type
 
 
 def test_key_order(db, table):
