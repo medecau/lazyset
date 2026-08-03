@@ -10,7 +10,7 @@ MySQL.
 
 > **Hard fork of [pudo/dataset](https://github.com/pudo/dataset).** It ships as
 > **`lazyset`** on PyPI and imports as **`lazyset`** (`import lazyset`). The
-> redesigned API — five self-describing write verbs and one honest `auto_create`
+> redesigned API — four self-describing write verbs and one honest `auto_create`
 > flag — breaks from upstream and is not a drop-in upgrade; see `CHANGELOG.md`
 > under 0.1.0 for the full list of breaking changes.
 
@@ -31,12 +31,11 @@ import lazyset
 db = lazyset.connect('sqlite:///:memory:')
 table = db['user']
 
-# five self-describing write verbs — each takes one row OR an iterable of rows
+# four self-describing write verbs — each takes one row OR an iterable of rows
 table.insert(dict(name='John Doe', age=46, country='China'))
-table.insert_ignore(dict(id=1, name='John Doe'), ['id'])
-table.upsert(dict(id=1, name='John Q. Doe'), ['id'])
+table.upsert(dict(name='Jane Doe', age=37, country='France'), ['name'])
 table.update(dict(name='John Doe', age=47), ['name'])
-table.delete(country='China')
+table.delete(country='France')
 
 # read it back
 john = table.find_one(name='John Doe')

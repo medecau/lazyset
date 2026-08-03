@@ -254,8 +254,10 @@ out of scope for the project, include:
 - Python-wrapped `JOIN` queries.
 - Creating databases, or managing DBMS software.
 
-`Table.upsert` and `Table.insert_ignore` use database-native conflict handling
-(`ON CONFLICT` / `ON DUPLICATE KEY`) against a unique arbiter index.
+`Table.upsert` uses database-native conflict handling (`ON CONFLICT` / `ON
+DUPLICATE KEY`) against a unique arbiter index. There is no separate
+`insert_ignore`: an upsert whose rows carry only the key columns compiles to
+the same `DO NOTHING`.
 
 There's also functionality that might be nice to support in the future but that
 requires significant engineering, such as async operations.

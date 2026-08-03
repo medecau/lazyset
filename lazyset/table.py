@@ -1,10 +1,10 @@
 """The `Table` object: CRUD, schema management, and query helpers.
 
-`Table` is the workhorse of lazyset. The five write verbs (`Table.insert`,
-`Table.insert_ignore`, `Table.upsert`, `Table.update`, `Table.delete`) each
-take one row **or** any iterable of rows; `Table.find` / `Table.find_one` /
-`Table.count` / `Table.distinct` read them back. Columns and the table itself
-are created on first write when ``auto_create`` is on.
+`Table` is the workhorse of lazyset. The four write verbs (`Table.insert`,
+`Table.upsert`, `Table.update`, `Table.delete`) each take one row **or** any
+iterable of rows; `Table.find` / `Table.find_one` / `Table.count` /
+`Table.distinct` read them back. Columns and the table itself are created on
+first write when ``auto_create`` is on.
 """
 
 import logging
@@ -295,70 +295,10 @@ class Table:
         self.db._auto_commit()
         return len(chunk)
 
-    @overload
-    def insert_ignore(
-        self,
-        rows: WriteRow,
-        keys: Sequence[str],
-        auto_create: bool | None = None,
-        types: dict[str, ColumnType] | None = None,
-        chunk_size: int = 1000,
-    ) -> Any: ...
-
-    @overload
-    def insert_ignore(
-        self,
-        rows: Iterable[WriteRow],
-        keys: Sequence[str],
-        auto_create: bool | None = None,
-        types: dict[str, ColumnType] | None = None,
-        chunk_size: int = 1000,
-    ) -> int: ...
-
-    def insert_ignore(
-        self,
-        rows: WriteRow | Iterable[WriteRow],
-        keys: Sequence[str],
-        auto_create: bool | None = None,
-        types: dict[str, ColumnType] | None = None,
-        chunk_size: int = 1000,
-    ) -> Any:
-        """Insert one row **or** an iterable of rows, skipping existing ones.
-
-        A row whose ``keys`` values already exist is left untouched — the
-        database decides existence natively via ``INSERT ... ON CONFLICT DO
-        NOTHING`` (SQLite/PostgreSQL) or a no-op ``ON DUPLICATE KEY UPDATE``
-        (MySQL). ``keys`` is required: it names the conflict arbiter.
-
-            table.insert_ignore(dict(id=10, title='I am a banana!'), ['id'])
-
-        With ``auto_create`` on (the default) a UNIQUE index on exactly
-        ``keys`` is created as the arbiter — a no-op when a matching unique
-        index or primary key already exists. It raises
-        `SchemaError` if the table already
-        holds rows with duplicate ``keys`` values. With ``auto_create=False``
-        that unique index (or primary key) must already exist, or the database
-        raises.
-
-        A single ``Mapping`` returns the inserted row's primary key, or
-        ``None`` if the row already existed (was skipped) or the table has no
-        primary key. Any other iterable returns the number of rows submitted.
-        """
-        keys = ensure_strings(keys)
-        if not keys:
-            raise SchemaError(
-                "insert_ignore() requires at least one key column as the "
-                "conflict arbiter."
-            )
-        if isinstance(rows, Mapping):
-            return self._insert_ignore_one(rows, keys, auto_create, types)
-        return self._insert_ignore_rows(rows, keys, chunk_size, auto_create, types)
-
     def _make_arbiter(self, keys: Sequence[str], auto_create: bool | None) -> list[str]:
         """Validate the key columns and create the UNIQUE arbiter index.
 
         Columns must already be synced. Returns the normalized key names.
-        Shared by the native insert_ignore and upsert paths.
         """
         norm_keys = [self._get_column_name(k) for k in keys]
         for k in norm_keys:
@@ -378,107 +318,10 @@ class Table:
                 if not self._has_unique_index(norm_keys):
                     raise SchemaError(
                         f"{self.name!r} has no UNIQUE index or primary key on "
-                        f"{norm_keys} to serve as the insert_ignore/upsert "
-                        "conflict arbiter; create one or enable auto_create."
+                        f"{norm_keys} to serve as the upsert conflict arbiter; "
+                        "create one or enable auto_create."
                     )
         return norm_keys
-
-    def _ignore_stmt(
-        self, norm_keys: Sequence[str], values: MutableRow | None = None
-    ) -> Insert:
-        """Build a dialect-native "insert, or do nothing on conflict" stmt.
-
-        Without ``values`` the statement is reused across column groups under
-        executemany (columns are inferred per execute); with ``values`` it is
-        a single-row insert whose primary key can be read back.
-        """
-        if self.db.is_mysql:
-            stmt = mysql_insert(self.table)
-            if values is not None:
-                stmt = stmt.values(values)
-            # MySQL has no DO NOTHING; assign a key to its own proposed value,
-            # a no-op on a duplicate key.
-            k0 = norm_keys[0]
-            return stmt.on_duplicate_key_update(**{k0: stmt.inserted[k0]})
-        ins = sqlite_insert(self.table) if self.db.is_sqlite else pg_insert(self.table)
-        if values is not None:
-            ins = ins.values(values)
-        return ins.on_conflict_do_nothing(index_elements=list(norm_keys))
-
-    def _insert_ignore_one(
-        self,
-        row: WriteRow,
-        keys: Sequence[str],
-        auto_create: bool | None,
-        types: dict[str, ColumnType] | None,
-    ) -> Any:
-        synced = self._sync_columns(row, auto_create, types=types)
-        norm_keys = self._make_arbiter(keys, auto_create)
-        res = self.db._execute_write(self._ignore_stmt(norm_keys, values=synced))
-        self.db._auto_commit()
-        if self.db.is_mysql:
-            # SQLAlchemy enables CLIENT_FOUND_ROWS on MySQL, so a *skipped*
-            # duplicate still reports rowcount 1 and inserted_primary_key
-            # echoes the bound key — both lie. lastrowid is the only reliable
-            # inserted-signal: the new AUTO_INCREMENT id, or 0 when nothing was
-            # inserted. A non-autoincrement primary key can't be read back, so
-            # this degrades to None there (documented driver limitation).
-            return res.lastrowid or None
-        # SQLite/PostgreSQL: DO NOTHING makes rowcount 0 on a skipped conflict,
-        # so a genuine insert is exactly rowcount 1 with a primary key to report.
-        if (
-            res.rowcount == 1
-            and res.inserted_primary_key is not None
-            and len(res.inserted_primary_key) > 0
-        ):
-            return res.inserted_primary_key[0]
-        return None
-
-    def _insert_ignore_rows(
-        self,
-        rows: Iterable[WriteRow],
-        keys: Sequence[str],
-        chunk_size: int,
-        auto_create: bool | None,
-        types: dict[str, ColumnType] | None,
-    ) -> int:
-        processed = 0
-        chunk: list[MutableRow] = []
-        for row in rows:
-            chunk.append(dict(row))
-            if len(chunk) >= chunk_size:
-                processed += self._flush_ignore_chunk(chunk, keys, auto_create, types)
-                chunk = []
-        if chunk:
-            processed += self._flush_ignore_chunk(chunk, keys, auto_create, types)
-        return processed
-
-    def _flush_ignore_chunk(
-        self,
-        chunk: list[MutableRow],
-        keys: Sequence[str],
-        auto_create: bool | None,
-        types: dict[str, ColumnType] | None,
-    ) -> int:
-        sync_row: MutableRow = {}
-        for row in chunk:
-            for k in row:
-                if k not in sync_row:
-                    sync_row[k] = row[k]
-        self._sync_columns(sync_row, auto_create, types=types)
-        norm_keys = self._make_arbiter(keys, auto_create)
-        # One DO-NOTHING statement serves every column group (its columns are
-        # inferred per execute); group only so executemany sees a uniform key
-        # set, leaving an omitted column to its server default.
-        stmt = self._ignore_stmt(norm_keys)
-        groups: dict[frozenset[str], list[MutableRow]] = {}
-        for row in chunk:
-            norm = {self._get_column_name(k): v for k, v in row.items()}
-            groups.setdefault(frozenset(norm), []).append(norm)
-        for group_rows in groups.values():
-            self.db._execute_write(stmt, group_rows)
-        self.db._auto_commit()
-        return len(chunk)
 
     def update(
         self,
@@ -1144,10 +987,9 @@ class Table:
     ) -> tuple[MutableRow, MutableRow]:
         keys = [self._get_column_name(k) for k in ensure_strings(keys)]
         # A key column absent from the table (not merely from the row) would
-        # compile to false() downstream, silently making insert_ignore/upsert
-        # insert a duplicate every call and update() return 0. Raise instead.
-        # The lenient false() posture of find/count/delete is unaffected —
-        # only the write path routes through here.
+        # compile to false() downstream, silently making update() return 0.
+        # Raise instead. Only update() routes through here; the lenient
+        # false() posture of find/count/delete is unaffected.
         for k in keys:
             if not self.has_column(k):
                 raise NoSuchColumnError(f"No such column: {k}")
@@ -1291,12 +1133,11 @@ class Table:
 
             table.create_index(['name', 'country'])
 
-        This is also how `Table.upsert` and
-        `Table.insert_ignore` obtain their
-        conflict arbiter: under ``auto_create`` they call
-        ``create_index(keys, unique=True)`` once. The call is a no-op when a
-        matching unique index (or primary key) on exactly ``keys`` already
-        exists, so it is safe to repeat. A caller-supplied ``mysql_length``
+        This is also how `Table.upsert` obtains its conflict arbiter: under
+        ``auto_create`` it calls ``create_index(keys, unique=True)`` once. The
+        call is a no-op when a matching unique index (or primary key) on
+        exactly ``keys`` already exists, so it is safe to repeat. A
+        caller-supplied ``mysql_length``
         dict is merged with the auto-computed text/binary prefix lengths
         rather than replacing them.
         """

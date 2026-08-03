@@ -15,11 +15,10 @@ table.insert(dict(name='John Doe', age=37))
 john = table.find_one(name='John Doe')
 ```
 
-Start at `connect`, then reach for the five `Table` write verbs
-(`Table.insert`, `Table.insert_ignore`, `Table.upsert`, `Table.update`,
-`Table.delete`) and the read helpers (`Table.find`, `Table.find_one`,
-`Table.count`, `Table.distinct`). The two guides below cover the same ground
-in tutorial form.
+Start at `connect`, then reach for the four `Table` write verbs
+(`Table.insert`, `Table.upsert`, `Table.update`, `Table.delete`) and the read
+helpers (`Table.find`, `Table.find_one`, `Table.count`, `Table.distinct`). The
+two guides below cover the same ground in tutorial form.
 
 .. include:: ../docs/quickstart.md
 

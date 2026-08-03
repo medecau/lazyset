@@ -34,79 +34,11 @@ def test_insert(table):
     assert table.find_one(id=last_id)["place"] == "Berlin"
 
 
-def test_insert_ignore(db):
-    # A native DO NOTHING needs a unique arbiter on the key, so use a table
-    # where ``place`` is genuinely unique (the weather fixture repeats it).
-    tbl = db["insert_ignore_basic"]
-    row = {"date": datetime(2011, 1, 2), "temperature": -10, "place": "Berlin"}
-    tbl.insert_ignore(row, ["place"])
-    assert len(tbl) == 1, len(tbl)
-    tbl.insert_ignore(row, ["place"])  # duplicate place -> skipped
-    assert len(tbl) == 1, len(tbl)
-
-
-def test_insert_ignore_single_sync_columns_pass(db):
-    # The native insert_ignore runs _sync_columns exactly once (no delegating
-    # to insert() that re-syncs). has_column() is called once per non-key row
-    # column inside that single pass.
-    tbl = db["insert_ignore_sync_pass"]
-    tbl.insert({"place": "seed", "date": datetime(2011, 1, 1), "temperature": 0})
-    original_has_column = tbl.has_column
-    calls = []
-
-    def spy(column):
-        calls.append(column)
-        return original_has_column(column)
-
-    tbl.has_column = spy
-    try:
-        tbl.insert_ignore(
-            {"date": datetime(2011, 1, 5), "temperature": 3, "place": "NewPlace"},
-            ["place"],
-        )
-    finally:
-        del tbl.has_column
-
-    assert calls.count("date") == 1, calls
-    assert calls.count("temperature") == 1, calls
-
-
-def test_insert_ignore_missing_key_column_raises(table):
-    # Previously, a `keys` column absent from both the row and the table
-    # compiled the existence check to `false()` (always 0 matches), so this
-    # silently inserted a duplicate row on every call. create_index() now
-    # raises before that check ever runs.
-    before = len(table)
-    with pytest.raises(DatasetError, match=r"^No such column: nonexistent_col$"):
-        table.insert_ignore({"place": "Berlin"}, ["nonexistent_col"])
-    assert len(table) == before
-
-
-def test_insert_ignore_missing_key_column_raises_auto_create_false(table):
-    # With auto_create=False the create_index guard is skipped, so the absent key
-    # column previously slipped through: _keys_to_args defaulted it to None,
-    # _args_to_clause compiled it to false(), count was 0, and the row was
-    # inserted as a silent duplicate on every call. _keys_to_args must raise.
-    before = len(table)
-    with pytest.raises(DatasetError, match=r"^No such column: nonexistent_col$"):
-        table.insert_ignore({"place": "Berlin"}, ["nonexistent_col"], auto_create=False)
-    assert len(table) == before
-
-
 def test_update_missing_table_column_raises(table):
     # A key column absent from the table (not merely from the row) used to
     # compile to false() and make update() silently return 0. It must raise.
     with pytest.raises(DatasetError, match=r"^No such column: nonexistent_col$"):
         table.update({"place": "Berlin"}, ["nonexistent_col"], auto_create=False)
-
-
-def test_insert_ignore_all_key(table):
-    for _i in range(0, 4):
-        table.insert_ignore(
-            {"date": datetime(2011, 1, 2), "temperature": -10, "place": "Berlin"},
-            ["date", "temperature", "place"],
-        )
-    assert len(table) == len(TEST_DATA) + 1, len(table)
 
 
 def test_insert_json(table):
@@ -178,15 +110,6 @@ def test_write_method_return_values(db, table):
     # No primary key column: insert() returns None (no PK to report).
     no_pk_table = db.table("no_pk_writes", primary_id=False)
     assert no_pk_table.insert({"a": 1}) is None
-
-    # insert_ignore() on a genuinely new row returns the inserted primary key.
-    ig = db["ig_returns"]
-    assert ig.insert_ignore({"place": "NewCity", "n": 1}, ["place"]) == 1
-    # insert_ignore() on a matching existing row returns None (skipped).
-    assert ig.insert_ignore({"place": "NewCity", "n": 2}, ["place"]) is None
-
-    # No primary key column: insert_ignore() returns None even for a new row.
-    assert no_pk_table.insert_ignore({"a": 2}, ["a"]) is None
 
     # upsert() returns the number of rows submitted (single row = 1), for both
     # the insert branch and the update branch.
@@ -1022,8 +945,6 @@ def test_update_chunk_size_flush_count(db):
 def _write_row(tbl, method_name, row, keys, **kwargs):
     if method_name == "insert":
         tbl.insert(row, **kwargs)
-    elif method_name == "insert_ignore":
-        tbl.insert_ignore(row, keys, **kwargs)
     elif method_name == "insert_many":
         tbl.insert([row], **kwargs)
     elif method_name == "update":
@@ -1038,7 +959,7 @@ def _write_row(tbl, method_name, row, keys, **kwargs):
 
 @pytest.mark.parametrize(
     "method_name",
-    ["insert", "insert_ignore", "insert_many", "update", "upsert", "upsert_many"],
+    ["insert", "insert_many", "update", "upsert", "upsert_many"],
 )
 def test_auto_create_false_rejects_unknown_column(db, method_name):
     tbl = db[f"ac_false_{method_name}"]
@@ -1059,7 +980,7 @@ def test_auto_create_false_rejects_unknown_column(db, method_name):
 
 @pytest.mark.parametrize(
     "method_name",
-    ["insert", "insert_ignore", "insert_many", "update", "upsert", "upsert_many"],
+    ["insert", "insert_many", "update", "upsert", "upsert_many"],
 )
 def test_types_forwarding(db, method_name):
     tbl = db[f"types_fwd_{method_name}"]
@@ -1080,7 +1001,7 @@ def test_types_forwarding(db, method_name):
 
 @pytest.mark.parametrize(
     "method_name",
-    ["insert", "insert_ignore", "insert_many", "update", "upsert", "upsert_many"],
+    ["insert", "insert_many", "update", "upsert", "upsert_many"],
 )
 def test_types_with_auto_create_false_rejected(db, method_name):
     # types= is inert with auto_create=False (nothing gets created for it);
@@ -1099,12 +1020,8 @@ def test_types_with_auto_create_false_rejected(db, method_name):
 
 
 def test_auto_create_creates_unique_arbiter(db):
-    # With auto_create (the default) the native insert_ignore/upsert create a
-    # UNIQUE arbiter index on the key columns.
-    tbl = db["arbiter_insert_ignore"]
-    tbl.insert_ignore({"a": 1}, ["a"])
-    assert tbl.has_index(["a"]) is True
-
+    # With auto_create (the default) the native upsert creates a UNIQUE
+    # arbiter index on the key columns.
     tbl2 = db["arbiter_upsert"]
     tbl2.upsert({"a": 1}, ["a"])
     assert tbl2.has_index(["a"]) is True
@@ -1113,11 +1030,6 @@ def test_auto_create_creates_unique_arbiter(db):
     # arbiter, so dataset raises SchemaError in Python before any SQL runs --
     # uniform across backends (SQLite/PostgreSQL would reject natively; MySQL
     # would otherwise silently insert a duplicate).
-    off1 = db["arbiter_insert_ignore_off"]
-    off1.insert({"a": 1})
-    with pytest.raises(SchemaError):
-        off1.insert_ignore({"a": 2}, ["a"], auto_create=False)
-
     off2 = db["arbiter_upsert_off"]
     off2.insert({"a": 1})
     with pytest.raises(SchemaError):

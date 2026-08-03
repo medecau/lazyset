@@ -2,7 +2,7 @@
 
 Lightweight Python library for reading/writing databases as easily as JSON — a thin layer over SQLAlchemy, no ORM models. Supports SQLite (default), PostgreSQL, MySQL. **Design bias: simplicity over features — don't over-engineer.**
 
-**Hard fork of [pudo/dataset](https://github.com/pudo/dataset).** The distribution and import name are both `lazyset` (first release 0.1.0). This fork deliberately breaks from upstream: five self-describing write verbs (`insert`/`insert_ignore`/`upsert`/`update`/`delete`, each taking one row **or** any iterable of rows), one honestly-named `auto_create` flag, and loud errors where 2.x was silently wrong. There are no upstream users of the fork to shepherd — see the fork-line policy under Must-follow.
+**Hard fork of [pudo/dataset](https://github.com/pudo/dataset).** The distribution and import name are both `lazyset` (first release 0.1.0). This fork deliberately breaks from upstream: four self-describing write verbs (`insert`/`upsert`/`update`/`delete`, each taking one row **or** any iterable of rows), one honestly-named `auto_create` flag, and loud errors where 2.x was silently wrong. There are no upstream users of the fork to shepherd — see the fork-line policy under Must-follow.
 
 ## Layout
 - `lazyset/database.py` — `Database`: connection, transactions, `query()`, `db[name]` / `db.table(...)` accessors
@@ -41,4 +41,4 @@ Lightweight Python library for reading/writing databases as easily as JSON — a
 
 ## Docs & scope
 API reference is generated from docstrings with **pdoc** (`make docs` → `site/`) and published to **GitHub Pages** by CI (`ci.yml`). The two narrative guides live as `docs/quickstart.md` / `docs/queries.md` and are pulled into the `lazyset` landing page via pdoc's `.. include::` in `lazyset/__init__.py` (paths resolve against the source checkout, not the wheel). Docstring cross-refs are bare backtick identifiers (`` `Table.find` ``), not Sphinx roles. Changelog in `CHANGELOG.md`. Release: `bump2version` → update `CHANGELOG.md` → `make dists` → push a signed tag `vX.Y.Z` (tag push auto-publishes to PyPI via `cd.yml`).
-Out of scope: FK/relations, Python-side JOINs, async. DB-native UPSERT is the single `upsert()` algorithm (`ON CONFLICT DO UPDATE` / `ON DUPLICATE KEY UPDATE`), and `insert_ignore()` is native `DO NOTHING` / ODKU-noop. Both require `keys` as the conflict arbiter and create the UNIQUE arbiter index under `auto_create`.
+Out of scope: FK/relations, Python-side JOINs, async. DB-native UPSERT is the single `upsert()` algorithm (`ON CONFLICT DO UPDATE` / `ON DUPLICATE KEY UPDATE`); key-only rows degrade to `DO NOTHING` / ODKU-noop, which is why there is no separate `insert_ignore()`. `upsert()` requires `keys` as the conflict arbiter and creates the UNIQUE arbiter index under `auto_create`.
