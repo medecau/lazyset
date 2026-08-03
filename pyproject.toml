@@ -62,6 +62,11 @@ packages = ["lazyset"]
 [tool.pytest.ini_options]
 testpaths = ["test"]
 
+[tool.mutmut]
+# mutmut otherwise guesses the source directory from the *checkout* directory
+# name, which does not match the package after the dataset -> lazyset rename.
+source_paths = ["lazyset"]
+
 [tool.ruff]
 target-version = "py310"
 

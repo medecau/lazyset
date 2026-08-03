@@ -15,7 +15,7 @@ Lightweight Python library for reading/writing databases as easily as JSON — a
 - Deps/env: `uv` (`uv run`, `uv sync`). Run tests: `make test` (or `uv run pytest`).
 - `make lint` — ruff + `mypy --strict` (only `lazyset/` is typed; ruff also checks `test/`). Run before committing.
 - `make format` — apply ruff format. Test another backend with `DATABASE_URL=postgresql://… make test`.
-- Mutation testing: `uv run mutmut run` then `uv run mutmut results` (dev dep). Known-accepted survivor buckets are documented in `CHANGELOG.md` under 2.0.0 — diff against that baseline rather than re-triaging from scratch.
+- Mutation testing: `uv run mutmut run` then `uv run mutmut results` (dev dep). Current baseline on SQLite under mutmut 3.6: **1319 mutants, 885 killed, 422 survived, 12 skipped** — diff against that rather than re-triaging from scratch. The survivor *categories* in `CHANGELOG.md` under 2.0.0 (dialect-guarded paths, equivalent mutants) still apply, but its counts predate mutmut 3.x and are not comparable.
 
 ## Must-follow
 - **Keep docs current:** when you change code, commands, deps, or public API, update the docs the change touches in the same pass — this `CLAUDE.md`, `README.md`, the docstrings, `docs/*.md`, `CHANGELOG.md`. A stale doc is a bug.
