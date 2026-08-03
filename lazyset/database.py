@@ -178,27 +178,37 @@ class Database:
         if not self.in_transaction:
             self._executable.commit()
 
-    def _execute_write(
-        self, statement: Executable, parameters: Any = None
+    def _execute(
+        self,
+        statement: Executable,
+        parameters: Any = None,
+        *,
+        conn: Connection | None = None,
     ) -> CursorResult[Any]:
-        """Execute a write statement, recovering the connection on error.
+        """Execute a statement, recovering the connection on error.
 
-        On any statement error outside an explicit transaction, roll the
-        connection back before re-raising. PostgreSQL aborts the whole
-        transaction on error and refuses every later statement until a
-        rollback, so without this a *caught* write error would poison the next
-        operation on the same thread. Mirrors `_auto_commit` (the
-        success path); inside an explicit transaction the user (or ``with
+        Every statement lazyset issues goes through here. On any error outside
+        an explicit transaction, roll the connection back before re-raising:
+        PostgreSQL aborts the whole transaction on error and refuses every
+        later statement until a rollback, so without this a *caught* error —
+        a failed write, or a SELECT on a column that vanished — would poison
+        the next operation on the same thread. Mirrors `Database._auto_commit`
+        (the success path); inside an explicit transaction the user (or ``with
         db:``) owns rollback, so this stays out of the way.
+
+        ``conn`` overrides the thread's connection. ``find(_streamed=True)``
+        runs on its own `sqlalchemy.Connection` with its own transaction — that
+        separation is what lets a caller iterate a streamed result while
+        writing through the main connection — so it must be executed, and
+        rolled back, on that connection rather than the thread's.
         """
+        connection = conn if conn is not None else self._executable
         try:
-            if parameters is None:
-                return self._executable.execute(statement)
-            return self._executable.execute(statement, parameters)
+            return connection.execute(statement, parameters)
         except Exception:
             if not self.in_transaction:
                 with contextlib.suppress(Exception):
-                    self._executable.rollback()
+                    connection.rollback()
             raise
 
     def begin(self) -> None:
@@ -456,7 +466,13 @@ class Database:
         if isinstance(query, str):
             query = text(query)
         binds = {**params, **kwargs} if params is not None else kwargs
-        rp = self._executable.execute(query, binds or None)
+        rp = self._execute(query, binds or None)
+        # A write issued here has to be committed like any other, or the
+        # autobegin transaction is abandoned and the change is lost. Ask
+        # SQLAlchemy whether the statement produced rows rather than parsing
+        # the SQL: False for INSERT/UPDATE/DELETE and DDL, True for SELECT.
+        if not rp.returns_rows:
+            self._auto_commit()
         return Results(rp, row_type=self.row_type)
 
     def __repr__(self) -> str:

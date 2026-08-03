@@ -203,6 +203,33 @@ def test_query(db, table):
     assert r["num"] == len(TEST_DATA), r
 
 
+def test_query_write_is_committed():
+    """A write issued through query() must survive the connection closing.
+
+    query() used to leave the autobegin transaction open, so the write was
+    discarded on close and its lock blocked the next connection.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        url = f"sqlite:///{os.path.join(tmp, 'query_write.db')}"
+        db = connect(url)
+        db["t"].insert({"a": 1})
+        db.query("INSERT INTO t (a) VALUES (99)")
+        db.close()
+
+        reopened = connect(url)
+        assert [r["a"] for r in reopened["t"].find(_order_by="a")] == [1, 99]
+        reopened.close()
+
+
+def test_query_read_is_not_committed(db, table):
+    """A SELECT through query() leaves an open transaction alone."""
+    db.begin()
+    db["weather"].insert({"place": "nowhere", "temperature": 0})
+    list(db.query("SELECT * FROM weather"))
+    db.rollback()
+    assert db["weather"].count() == len(TEST_DATA)
+
+
 def test_table_cache_updates(db):
     tbl1 = db.table("people")
     data = OrderedDict([("first_name", "John"), ("last_name", "Smith")])

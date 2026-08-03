@@ -230,7 +230,7 @@ class Table:
         types: dict[str, ColumnType] | None,
     ) -> Any:
         synced = self._sync_columns(row, auto_create, types=types)
-        res = self.db._execute_write(self.table.insert().values(synced))
+        res = self.db._execute(self.table.insert().values(synced))
         self.db._auto_commit()
         if res.inserted_primary_key is not None and len(res.inserted_primary_key) > 0:
             return res.inserted_primary_key[0]
@@ -284,7 +284,7 @@ class Table:
             norm = {self._get_column_name(k): v for k, v in row.items()}
             groups.setdefault(frozenset(norm), []).append(norm)
         for group_rows in groups.values():
-            self.db._execute_write(self.table.insert(), group_rows)
+            self.db._execute(self.table.insert(), group_rows)
         self.db._auto_commit()
         return len(chunk)
 
@@ -363,7 +363,7 @@ class Table:
         if not len(values):
             return self.count(clause)
         stmt = self.table.update().where(clause).values(values)
-        rp = self.db._execute_write(stmt)
+        rp = self.db._execute(stmt)
         self.db._auto_commit()
         return rp.rowcount
 
@@ -466,7 +466,7 @@ class Table:
                         for gr in sub
                     )
                 )
-                rp2 = self.db._execute_write(
+                rp2 = self.db._execute(
                     select(*(self.table.c[k] for k in norm_keys)).where(clause)
                 )
                 matched.update(tuple(r) for r in rp2)
@@ -500,7 +500,7 @@ class Table:
                     }
                 )
             )
-            rp = self.db._execute_write(stmt, group_rows)
+            rp = self.db._execute(stmt, group_rows)
             if rp.supports_sane_multi_rowcount():
                 updated += rp.rowcount
             else:
@@ -607,7 +607,7 @@ class Table:
             stmt = stmts.get(group_cols)
             if stmt is None:
                 stmt = stmts[group_cols] = self._upsert_stmt(group_cols, norm_keys)
-            self.db._execute_write(stmt, group_rows)
+            self.db._execute(stmt, group_rows)
         self.db._auto_commit()
         return len(chunk)
 
@@ -666,7 +666,7 @@ class Table:
             return 0
         clause = self._filter_clause(clauses, where, filters)
         stmt = self.table.delete().where(clause)
-        rp = self.db._execute_write(stmt)
+        rp = self.db._execute(stmt)
         self.db._auto_commit()
         return rp.rowcount
 
@@ -1236,13 +1236,13 @@ class Table:
             query = query.order_by(*orderings)
 
         stream_conn = None
-        conn = self.db._executable
+        conn = None
         if _streamed:
             stream_conn = self.db.engine.connect()
             conn = stream_conn.execution_options(stream_results=True)
 
         return Results(
-            conn.execute(query),
+            self.db._execute(query, conn=conn),
             row_type=self.db.row_type,
             connection=stream_conn,
         )
@@ -1300,7 +1300,7 @@ class Table:
         args = self._filter_clause(_clauses, where, kwargs)
         query = select(func.count()).where(args)
         query = query.select_from(self.table)
-        rp = self.db._executable.execute(query)
+        rp = self.db._execute(query)
         res = rp.fetchone()
         if res is not None:
             return int(res[0])
