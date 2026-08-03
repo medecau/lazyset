@@ -993,14 +993,28 @@ class Table:
             table.create_column('created_at', db.types.datetime)
 
         `type` corresponds to an SQLAlchemy type, most easily referenced
-        through ``db.types`` (see `Types`).
-        Additional keyword arguments are passed
-        to the constructor of `Column`, so that default values, and
-        options like `nullable` and `unique` can be set.
+        through ``db.types`` (see `Types`). Additional keyword arguments are
+        passed to the constructor of `Column`, so options that the DDL carries
+        — ``nullable``, ``server_default`` — can be set:
 
-            table.create_column('key', unique=True, nullable=False)
-            table.create_column('food', default='banana')
+            table.create_column('req', db.types.text, nullable=False)
+            table.create_column('food', db.types.text, server_default='banana')
+
+        Python-side defaults (``default=`` / ``onupdate=``) are rejected: they
+        live on the in-memory `Column`, which is discarded as soon as the table
+        is re-reflected, so they would never fire. Use ``server_default`` (the
+        database applies it) instead. For a unique constraint use
+        `Table.create_index` with ``unique=True`` — passing ``unique=True``
+        here is silently skipped by alembic on some backends.
         """
+        for inert in ("default", "onupdate"):
+            if inert in kwargs:
+                raise SchemaError(
+                    f"create_column({name!r}) does not support {inert}=: it is a "
+                    "Python-side default on a Column this table discards on the "
+                    "next reflection, so it would never apply. Use "
+                    f"server_default= to have the database own the {inert}."
+                )
         name = self._get_column_name(name)
         if self.has_column(name):
             log.debug(f"Column exists: {name}")
@@ -1373,5 +1387,10 @@ class Table:
         return self.find()
 
     def __repr__(self) -> str:
-        """Get table representation."""
-        return f"<Table({self.table.name})>"
+        """Get table representation.
+
+        Reads the normalized name rather than ``self.table.name``: the latter
+        reflects (or raises on) a table that does not exist yet, and a repr
+        must be side-effect-free.
+        """
+        return f"<Table({self.name})>"

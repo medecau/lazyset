@@ -47,9 +47,6 @@ from lazyset.util import (
 
 # shut up useless SA warning:
 warnings.filterwarnings("ignore", "Unicode type received non-unicode bind param value.")
-warnings.filterwarnings(
-    "ignore", "Skipping unsupported ALTER for creation of implicit constraint"
-)
 
 __all__ = [
     "Database",

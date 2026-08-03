@@ -216,6 +216,15 @@ def test_repr(table):
     )
 
 
+def test_repr_no_side_effects():
+    # repr must not reflect or auto-create; on an auto_create=False database
+    # touching self.table for a missing table raises DatasetError.
+    db = connect("sqlite://", auto_create=False)
+    assert repr(db["ghost"]) == "<Table(ghost)>"
+    assert "ghost" not in db.tables
+    db.close()
+
+
 def test_delete_nonexist_entry(table):
     assert table.delete(place="Berlin") == 0, "entry not exist, should fail to delete"
 
@@ -1593,6 +1602,24 @@ def test_create_column_forwards_kwargs(db, table):
         "nullable_test", db.types.string(255), nullable=False, server_default="x"
     )
     assert table.table.c["nullable_test"].nullable is False
+
+
+@pytest.mark.parametrize("kwarg", ["default", "onupdate"])
+def test_create_column_rejects_inert_kwargs(table, kwarg):
+    # Python-side defaults live on a Column this table discards on the next
+    # reflection, so they never fire — reject them instead of dropping them.
+    with pytest.raises(SchemaError, match="server_default"):
+        table.create_column("inert", table.db.types.text, **{kwarg: "banana"})
+    assert not table.has_column("inert")
+
+
+def test_create_column_server_default_applies(db):
+    # The working alternative: the database owns the default, so it survives.
+    tbl = db["server_default_col"]
+    tbl.insert({"a": 1})
+    tbl.create_column("food", db.types.text, server_default="banana")
+    tbl.insert({"a": 2})
+    assert tbl.find_one(a=2)["food"] == "banana"
 
 
 def test_create_column_existing_logs_debug(table, caplog):
