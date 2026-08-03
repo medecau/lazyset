@@ -10,7 +10,7 @@ first write when ``auto_create`` is on.
 import logging
 import threading
 import warnings
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal, overload
 
 from sqlalchemy import func, select
@@ -236,6 +236,63 @@ class Table:
             return res.inserted_primary_key[0]
         return None
 
+    @staticmethod
+    def _chunks(
+        rows: Iterable[WriteRow], chunk_size: int
+    ) -> Iterator[list[MutableRow]]:
+        """Buffer an iterable of rows into chunks of at most ``chunk_size``.
+
+        Consumes the iterable streamingly (generators included), so a huge or
+        lazy source is never fully materialised, and copies each row into a
+        plain dict — the write paths mutate rows, and never the caller's.
+        """
+        chunk: list[MutableRow] = []
+        for row in rows:
+            chunk.append(dict(row))
+            if len(chunk) >= chunk_size:
+                yield chunk
+                chunk = []
+        if chunk:
+            yield chunk
+
+    def _sync_chunk_columns(
+        self,
+        chunk: list[MutableRow],
+        auto_create: bool | None,
+        types: dict[str, ColumnType] | None,
+    ) -> None:
+        """Create any columns this chunk needs, in one pass.
+
+        Column creation is chunk-wide, so the chunk's keys are unioned into a
+        single sample row (first value per key wins, which is all
+        `Table._sync_columns` needs to guess a type). This also enforces the
+        ``auto_create=False`` strictness per chunk.
+        """
+        sample: MutableRow = {}
+        for row in chunk:
+            for key in row:
+                if key not in sample:
+                    sample[key] = row[key]
+        self._sync_columns(sample, auto_create, types=types)
+
+    def _group_by_columns(
+        self, chunk: list[MutableRow]
+    ) -> dict[frozenset[str], list[MutableRow]]:
+        """Group a chunk's rows by their exact normalized column set.
+
+        A column a row omits is left out of that group's statement, so the DB
+        applies its default rather than the row being padded to the union with
+        an explicit NULL (which would override a ``server_default``).
+        executemany also needs a uniform key set per statement, which the
+        grouping ensures. Names are normalized to the real DB names
+        (case-insensitive), so e.g. ``{'NAME': …}`` lands in ``name``.
+        """
+        groups: dict[frozenset[str], list[MutableRow]] = {}
+        for row in chunk:
+            norm = {self._get_column_name(k): v for k, v in row.items()}
+            groups.setdefault(frozenset(norm), []).append(norm)
+        return groups
+
     def _insert_rows(
         self,
         rows: Iterable[WriteRow],
@@ -243,17 +300,8 @@ class Table:
         auto_create: bool | None,
         types: dict[str, ColumnType] | None,
     ) -> int:
-        # Consume the iterable streamingly (generators included): buffer a
-        # chunk, sync + write it, repeat. No whole-input pre-scan, so a huge
-        # or lazy source is never fully materialised.
         inserted = 0
-        chunk: list[MutableRow] = []
-        for row in rows:
-            chunk.append(dict(row))  # copy: never mutate the caller's row
-            if len(chunk) >= chunk_size:
-                inserted += self._flush_insert_chunk(chunk, auto_create, types)
-                chunk = []
-        if chunk:
+        for chunk in self._chunks(rows, chunk_size):
             inserted += self._flush_insert_chunk(chunk, auto_create, types)
         return inserted
 
@@ -263,27 +311,8 @@ class Table:
         auto_create: bool | None,
         types: dict[str, ColumnType] | None,
     ) -> int:
-        # Column creation is chunk-wide, so union this chunk's keys for one
-        # _sync_columns pass (this also enforces the auto_create=False
-        # strictness per chunk).
-        sync_row: MutableRow = {}
-        for row in chunk:
-            for key in row:
-                if key not in sync_row:
-                    sync_row[key] = row[key]
-        self._sync_columns(sync_row, auto_create, types=types)
-
-        # Group by the exact column set so an omitted column is left out of
-        # its group's INSERT and the DB applies its default, rather than being
-        # padded to the union with an explicit NULL (which would override a
-        # server_default). executemany needs a uniform key set per statement,
-        # which the grouping ensures. Column names are normalised to the real
-        # DB names (case-insensitive), so e.g. {'NAME': …} lands in 'name'.
-        groups: dict[frozenset[str], list[MutableRow]] = {}
-        for row in chunk:
-            norm = {self._get_column_name(k): v for k, v in row.items()}
-            groups.setdefault(frozenset(norm), []).append(norm)
-        for group_rows in groups.values():
+        self._sync_chunk_columns(chunk, auto_create, types)
+        for group_rows in self._group_by_columns(chunk).values():
             self.db._execute(self.table.insert(), group_rows)
         self.db._auto_commit()
         return len(chunk)
@@ -377,13 +406,7 @@ class Table:
     ) -> int:
         keys = ensure_strings(keys)
         updated = 0
-        chunk: list[MutableRow] = []
-        for row in rows:
-            chunk.append(dict(row))
-            if len(chunk) >= chunk_size:
-                updated += self._flush_update_chunk(chunk, keys, auto_create, types)
-                chunk = []
-        if chunk:
+        for chunk in self._chunks(rows, chunk_size):
             updated += self._flush_update_chunk(chunk, keys, auto_create, types)
         return updated
 
@@ -394,16 +417,11 @@ class Table:
         auto_create: bool | None,
         types: dict[str, ColumnType] | None,
     ) -> int:
-        # Sync this chunk's columns (value columns + any key columns present),
-        # enforcing the auto_create=False strictness per chunk. A new value
-        # column honours auto_create/types; an empty write to a deferred table
-        # raises the same clear DatasetError as the single-row path.
-        sample: MutableRow = {}
-        for row in chunk:
-            for col in row:
-                if col not in sample:
-                    sample[col] = row[col]
-        self._sync_columns(sample, auto_create, types=types)
+        # Sync this chunk's columns (value columns + any key columns present).
+        # A new value column honours auto_create/types; an empty write to a
+        # deferred table raises the same clear DatasetError as the single-row
+        # path.
+        self._sync_chunk_columns(chunk, auto_create, types)
 
         # Normalize key names now that columns exist, so a case-mismatched key
         # (e.g. ['ID'] against an 'id' column) resolves.
@@ -567,15 +585,7 @@ class Table:
         # One compiled statement per column set, cached across chunks.
         stmts: dict[frozenset[str], Insert] = {}
         processed = 0
-        chunk: list[MutableRow] = []
-        for row in rows:
-            chunk.append(dict(row))
-            if len(chunk) >= chunk_size:
-                processed += self._flush_upsert_chunk(
-                    chunk, keys, auto_create, types, stmts
-                )
-                chunk = []
-        if chunk:
+        for chunk in self._chunks(rows, chunk_size):
             processed += self._flush_upsert_chunk(
                 chunk, keys, auto_create, types, stmts
             )
@@ -589,21 +599,11 @@ class Table:
         types: dict[str, ColumnType] | None,
         stmts: dict[frozenset[str], Insert],
     ) -> int:
-        sync_row: MutableRow = {}
-        for row in chunk:
-            for k in row:
-                if k not in sync_row:
-                    sync_row[k] = row[k]
-        self._sync_columns(sync_row, auto_create, types=types)
+        self._sync_chunk_columns(chunk, auto_create, types)
         norm_keys = self._make_arbiter(keys, auto_create)
-        # Group by the exact column set: an omitted column is left out of its
-        # group's INSERT and SET, so the DB applies its default on insert and
-        # leaves the column untouched on update.
-        groups: dict[frozenset[str], list[MutableRow]] = {}
-        for row in chunk:
-            norm = {self._get_column_name(k): v for k, v in row.items()}
-            groups.setdefault(frozenset(norm), []).append(norm)
-        for group_cols, group_rows in groups.items():
+        # Grouping also keeps an omitted column out of its group's SET, so the
+        # column is left untouched on update.
+        for group_cols, group_rows in self._group_by_columns(chunk).items():
             stmt = stmts.get(group_cols)
             if stmt is None:
                 stmt = stmts[group_cols] = self._upsert_stmt(group_cols, norm_keys)
