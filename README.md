@@ -1,6 +1,6 @@
 # lazyset: databases for lazy people
 
-[![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/ci.yml)
+[![CI](https://github.com/medecau/lazyset/actions/workflows/ci.yml/badge.svg)](https://github.com/medecau/lazyset/actions/workflows/ci.yml)
 
 **lazyset** makes reading and writing a SQL database as simple as working with a
 JSON file. It is a thin layer over [SQLAlchemy](https://www.sqlalchemy.org/) with
@@ -46,7 +46,7 @@ for row in table.find(age={'>=': 21}, _order_by='name'):
 
 ## Documentation
 
-Full API reference and guides: <https://OWNER.github.io/REPO/> — generated from
+Full API reference and guides: <https://medecau.github.io/lazyset/> — generated from
 docstrings with [pdoc](https://pdoc.dev/) and published to GitHub Pages by CI.
 Build them locally with `make docs` (output in `site/`).
 

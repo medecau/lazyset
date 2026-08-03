@@ -60,7 +60,7 @@ results = table.find(status='open', _order_by='created')
 ```
 
 You can also pass
-[SQLAlchemy core expressions](https://docs.sqlalchemy.org/en/21/tutorial/data_select.html#tutorial-selecting-data)
+[SQLAlchemy core expressions](https://docs.sqlalchemy.org/en/latest/tutorial/data_select.html#tutorial-selecting-data)
 directly into `Table.find` as positional arguments. Access the underlying
 SQLAlchemy table via `table.table` and its columns via `table.table.columns`:
 
@@ -103,5 +103,5 @@ results = db.query('SELECT * FROM users WHERE country = :from', {'from': 'US'})
 ```
 
 For fully programmatic, composable query building, consider using
-[SQLAlchemy core expressions](https://docs.sqlalchemy.org/en/21/tutorial/data_select.html#tutorial-selecting-data)
+[SQLAlchemy core expressions](https://docs.sqlalchemy.org/en/latest/tutorial/data_select.html#tutorial-selecting-data)
 directly.

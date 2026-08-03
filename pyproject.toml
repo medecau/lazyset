@@ -27,7 +27,7 @@ classifiers = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "sqlalchemy>=1.4.0,<3.0.0",
+    "sqlalchemy>=2.0,<3.0",
     "alembic>=0.6.2",
 ]
 
@@ -48,9 +48,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/pudo/dataset"
-Repository = "https://github.com/pudo/dataset"
-Documentation = "https://dataset.readthedocs.io/"
+Homepage = "https://github.com/medecau/lazyset"
+Repository = "https://github.com/medecau/lazyset"
+Documentation = "https://medecau.github.io/lazyset/"
+Changelog = "https://github.com/medecau/lazyset/blob/main/CHANGELOG.md"
 
 [tool.hatch.version]
 path = "lazyset/__init__.py"

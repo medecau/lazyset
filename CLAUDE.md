@@ -36,7 +36,7 @@ Lightweight Python library for reading/writing databases as easily as JSON — a
 - **Errors:** `DatasetError` is the base, `QueryError` for invalid filters; name exception classes with an `Error` suffix.
 - **Python 3.10+:** `X | None`, builtin generics (`list[str]`, `dict[...]`).
 
-## Transactions (SQLAlchemy 1.4–2.x)
+## Transactions (SQLAlchemy 2.x)
 2.x "autobegin" starts a transaction on first use; `_auto_commit()` commits after writes when no explicit transaction is open. Nested and non-nested transactions must both work — test both, and with multiple threads. See `begin()` / `commit()` / `rollback()` in `database.py`.
 
 ## Docs & scope

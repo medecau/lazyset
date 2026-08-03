@@ -227,7 +227,7 @@ for row in result:
 ```
 
 `Database.query` can also run
-[SQLAlchemy core expressions](https://docs.sqlalchemy.org/en/21/orm/queryguide/query.html)
+[SQLAlchemy core expressions](https://docs.sqlalchemy.org/en/latest/orm/queryguide/query.html)
 for programmatic construction of more complex queries:
 
 ```python
