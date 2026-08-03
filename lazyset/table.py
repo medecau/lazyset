@@ -31,7 +31,6 @@ from sqlalchemy.sql.expression import (
 
 from lazyset.types import MYSQL_LENGTH_TYPES, ColumnType, Types
 from lazyset.util import (
-    QUERY_STEP,
     DatasetError,
     MutableRow,
     NoSuchColumnError,
@@ -936,7 +935,7 @@ class Table:
         """Reject leading-underscore filter kwargs on the read helpers.
 
         Leading-underscore names are reserved for read modifiers
-        (``_limit``, ``_offset``, ``_order_by``, ``_step``, ``_streamed``);
+        (``_limit``, ``_offset``, ``_order_by``, ``_streamed``);
         one arriving in ``**kwargs`` is either a typo or a modifier passed to
         a method that does not accept it. Filter an underscore-named column
         via ``where={...}`` or a positional SQLAlchemy clause instead.
@@ -1185,7 +1184,6 @@ class Table:
         _offset: int = 0,
         _order_by: str | Sequence[str] | None = None,
         _streamed: bool = False,
-        _step: int | None = QUERY_STEP,
         where: Mapping[str, SQLValue] | None = None,
         **kwargs: SQLValue,
     ) -> Results:
@@ -1209,10 +1207,10 @@ class Table:
             # return all rows sorted by multiple columns (descending by year)
             results = table.find(_order_by=['country', '-year'])
 
-        ``_order_by``, ``_limit``, ``_offset``, ``_step`` and ``_streamed``
-        are reserved read modifiers; every leading-underscore name is
-        reserved. To filter a column whose name starts with an underscore
-        (or otherwise collides), pass it via ``where``:
+        ``_order_by``, ``_limit``, ``_offset`` and ``_streamed`` are reserved
+        read modifiers; every leading-underscore name is reserved. To filter a
+        column whose name starts with an underscore (or otherwise collides),
+        pass it via ``where``:
 
             results = table.find(where={'_id': 5})
 
@@ -1246,7 +1244,6 @@ class Table:
         return Results(
             conn.execute(query),
             row_type=self.db.row_type,
-            step=_step,
             connection=stream_conn,
         )
 
@@ -1261,22 +1258,20 @@ class Table:
 
         Works just like `Table.find` but returns one
         result, or ``None``. ``_offset`` and ``where`` behave as on ``find``;
-        the result-streaming modifiers (``_step``/``_streamed``) do not apply
-        to a single-row fetch.
+        ``_streamed`` does not apply to a single-row fetch.
 
             row = table.find_one(country='United States')
         """
         if not self.exists:
             return None
 
-        # Validate here too: a reserved modifier in kwargs (e.g. _step) would
+        # Validate here too: a reserved modifier in kwargs (e.g. _limit) would
         # otherwise collide with the values find_one forces below.
         self._reject_reserved_kwargs(kwargs)
         resiter = self.find(
             *args,
             _limit=1,
             _offset=_offset,
-            _step=None,
             where=where,
             **kwargs,  # type: ignore[arg-type]
         )

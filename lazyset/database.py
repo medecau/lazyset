@@ -32,14 +32,12 @@ from sqlalchemy.sql.expression import Executable
 from lazyset.table import Table
 from lazyset.types import ColumnType, Types
 from lazyset.util import (
-    QUERY_STEP,
     DatasetError,
     Results,
     RowFactory,
     SchemaError,
     normalize_column_key,
     normalize_table_name,
-    safe_url,
 )
 
 log = logging.getLogger(__name__)
@@ -433,8 +431,6 @@ class Database:
         self,
         query: str | Executable,
         params: Mapping[str, Any] | None = None,
-        *,
-        _step: int | None = QUERY_STEP,
         **kwargs: Any,
     ) -> Results:
         """Run a statement on the database directly.
@@ -447,26 +443,25 @@ class Database:
 
         Bind a named parameter in the query (i.e. ``SELECT * FROM tbl WHERE a =
         :foo``) by passing the value as a keyword argument (``foo='bar'``). For
-        bind names that collide with reserved words, or with ``params`` /
-        ``_step`` themselves, pass the whole mapping as ``params`` instead.
-        ``_step`` sets the result fetch batch size (``None`` fetches all rows in
-        one go).
+        bind names that collide with reserved words, or with ``params`` itself,
+        pass the whole mapping as ``params`` instead.
 
             statement = 'SELECT user, COUNT(*) c FROM photos GROUP BY user'
             for row in db.query(statement):
                 print(row['user'], row['c'])
 
-        The returned iterator will yield each result sequentially.
+        The returned iterator will yield each result sequentially, pulling rows
+        from the database as it goes.
         """
         if isinstance(query, str):
             query = text(query)
         binds = {**params, **kwargs} if params is not None else kwargs
-        if binds:
-            rp = self._executable.execute(query, binds)
-        else:
-            rp = self._executable.execute(query)
-        return Results(rp, row_type=self.row_type, step=_step)
+        rp = self._executable.execute(query, binds or None)
+        return Results(rp, row_type=self.row_type)
 
     def __repr__(self) -> str:
-        """Text representation contains the URL."""
-        return f"<Database({safe_url(self.url)})>"
+        """Text representation contains the URL, with any password masked."""
+        # make_url(self.url), not self.engine.url: close() nulls the engine and
+        # a repr must never raise.
+        url = make_url(self.url).render_as_string(hide_password=True)
+        return f"<Database({url})>"

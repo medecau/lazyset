@@ -13,7 +13,6 @@ DB-backed tests.
 import re
 import string
 from datetime import date, datetime
-from urllib.parse import urlparse
 
 import pytest
 from hypothesis import assume, example, given
@@ -28,7 +27,6 @@ from lazyset.util import (
     normalize_column_key,
     normalize_column_name,
     normalize_table_name,
-    safe_url,
 )
 
 TYPES = Types()
@@ -52,28 +50,8 @@ TABLENAME = st.text(
 
 
 # ---------------------------------------------------------------------------
-# Regression tests for the three util.py fixes.
+# Regression tests for the util.py name-normalization fixes.
 # ---------------------------------------------------------------------------
-
-
-def test_safe_url_masks_userinfo_password():
-    """The password in the userinfo is always replaced by the mask."""
-    out = safe_url("postgresql://user:secret@host:5432/db")
-    assert urlparse(out).password == "*****"
-    assert "secret" not in out
-
-
-def test_safe_url_preserves_path_and_query():
-    """A ``:pw@`` sequence in the path/query must not be scrubbed.
-
-    The previous implementation used a global ``str.replace(':pw@', ...)``
-    which mangled any matching sequence outside the userinfo.
-    """
-    url = "postgresql://user:secret@host/db?redirect=svc:secret@example.com"
-    out = safe_url(url)
-    assert urlparse(out).password == "*****"
-    # The query value is left untouched.
-    assert "svc:secret@example.com" in out
 
 
 def test_normalize_column_name_rejects_dot_past_truncation():
@@ -332,43 +310,6 @@ def test_guess_passthrough():
     instance = BigInteger()
     assert TYPES.guess(instance) is instance
     assert isinstance(TYPES.guess(BigInteger), BigInteger)
-
-
-# ---------------------------------------------------------------------------
-# safe_url
-# ---------------------------------------------------------------------------
-
-
-@given(user=ALNUM, pw=ALNUM, host=ALNUM)
-def test_safe_url_password_masked(user, pw, host):
-    url = f"postgresql://{user}:{pw}@{host}/db"
-    out = safe_url(url)
-    parsed = urlparse(out)
-    assert parsed.password == "*****"
-    assert parsed.username == user
-    assert safe_url(out) == out  # idempotent
-
-
-@given(host=ALNUM, path=ALNUM)
-def test_safe_url_no_password_is_noop(host, path):
-    url = f"postgresql://{host}/{path}"
-    assert safe_url(url) == url
-
-
-def test_safe_url_userinfo_special_chars():
-    """A password containing ':' and '@' must not confuse the manual netloc split.
-
-    The rewrite re-splits ``netloc`` by hand (``rpartition("@")`` then
-    ``partition(":")``) instead of trusting ``urlparse``'s own username/
-    password properties, so it needs its own coverage for the partition
-    direction on both delimiters.
-    """
-    url = "postgresql://user:pa:ss@word@host:5432/db"
-    out = safe_url(url)
-    assert out == "postgresql://user:*****@host:5432/db"
-    parsed = urlparse(out)
-    assert parsed.username == "user"
-    assert parsed.hostname == "host"
 
 
 # ---------------------------------------------------------------------------

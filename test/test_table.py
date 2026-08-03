@@ -247,21 +247,14 @@ def test_find_by_filter(table):
 def test_find_pagination(table):
     ds = list(table.find(place=TEST_CITY_1, _limit=2))
     assert len(ds) == 2, ds
-    ds = list(table.find(place=TEST_CITY_1, _limit=2, _step=1))
-    assert len(ds) == 2, ds
-    ds = list(table.find(place=TEST_CITY_1, _limit=1, _step=2))
+    ds = list(table.find(place=TEST_CITY_1, _limit=1))
     assert len(ds) == 1, ds
-    ds = list(table.find(_step=2))
+    ds = list(table.find())
     assert len(ds) == len(TEST_DATA), ds
     ds = list(table.find(place=TEST_CITY_1, _offset=1))
     assert len(ds) == 2, ds
     ds = list(table.find(place=TEST_CITY_1, _limit=2, _offset=2))
     assert len(ds) == 1, ds
-
-
-def test_find_step_zero(table):
-    # _step=None disables chunked fetching (the only way to disable it).
-    assert len(list(table.find(_step=None))) == len(TEST_DATA)
 
 
 def test_find_order_by(table):
@@ -337,9 +330,9 @@ def test_where_and_kwargs_combine(table):
         lambda t: t.count(_limit=1),
         lambda t: t.count(_offset=1),
         lambda t: list(t.find(_bogus=1)),
-        lambda t: t.delete(_step=1),
+        lambda t: t.delete(_limit=1),
         lambda t: list(t.distinct("place", _streamed=True)),
-        lambda t: t.find_one(_step=1),
+        lambda t: t.find_one(_limit=1),
     ],
 )
 def test_reserved_kwarg_rejected(table, call):
@@ -527,9 +520,9 @@ def test_startswith_endswith_metachars_escaped_in_delete(db):
 
 
 def test_streamed_update(table):
-    ds = list(table.find(place=TEST_CITY_1, _streamed=True, _step=1))
+    ds = list(table.find(place=TEST_CITY_1, _streamed=True))
     assert len(ds) == 3, len(ds)
-    for row in table.find(place=TEST_CITY_1, _streamed=True, _step=1):
+    for row in table.find(place=TEST_CITY_1, _streamed=True):
         row["temperature"] = -1
         table.update(row, ["id"])
     # The streamed updates were persisted.

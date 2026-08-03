@@ -10,13 +10,9 @@ from datetime import date, datetime
 from decimal import Decimal
 from hashlib import sha1
 from typing import Any
-from urllib.parse import urlparse, urlunparse
 
-from sqlalchemy import Connection, ResultProxy
-from sqlalchemy.engine import Row as SARow
+from sqlalchemy import Connection, CursorResult, RowMapping
 from sqlalchemy.exc import ResourceClosedError
-
-QUERY_STEP = 1000
 
 # Type definitions for SQL values and rows
 SQLPlainValue = (
@@ -57,10 +53,6 @@ Row = Mapping[str, Any]
 RowFactory = Callable[[Iterable[tuple[str, Any]]], Row]
 
 
-def convert_row(factory: RowFactory, row: SARow[Any]) -> Row:
-    return factory(row._mapping.items())  # type: ignore[arg-type]
-
-
 class DatasetError(Exception):
     """Base class for every error raised by lazyset."""
 
@@ -82,19 +74,11 @@ class NoSuchColumnError(SchemaError):
     """A referenced column does not exist on the table."""
 
 
-def iter_result_proxy(
-    rp: ResultProxy[Any], step: int | None = None
-) -> Iterator[SARow[Any]]:
-    """Iterate over the ResultProxy."""
-    while True:
-        chunk = rp.fetchall() if step is None else rp.fetchmany(size=step)
-        if not chunk:
-            break
-        yield from chunk
-
-
 class Results(Iterator[Row]):
-    """Wrap a SQLAlchemy ResultProxy as an iterator of dict-like rows.
+    """Wrap a SQLAlchemy result as an iterator of dict-like rows.
+
+    Rows are pulled from the result lazily, one at a time, so iterating a
+    large table never materializes it in memory.
 
     Also usable as a context manager so the underlying result/connection is
     released on exit:
@@ -106,9 +90,8 @@ class Results(Iterator[Row]):
 
     def __init__(
         self,
-        result_proxy: ResultProxy[Any] | None,
+        result_proxy: CursorResult[Any] | None,
         row_type: RowFactory = dict,
-        step: int | None = None,
         connection: Connection | None = None,
     ):
         self.row_type = row_type
@@ -116,18 +99,22 @@ class Results(Iterator[Row]):
         self._conn = connection
         if result_proxy is None:
             self.keys: list[str] = []
-            self._iter: Iterator[SARow[Any]] = iter([])
+            self._iter: Iterator[RowMapping] = iter([])
         else:
             try:
                 self.keys = list(result_proxy.keys())
-                self._iter = iter_result_proxy(result_proxy, step=step)
+                self._iter = iter(result_proxy.mappings())
             except ResourceClosedError:
+                # A write executed through db.query() returns a closed result
+                # with no columns to read.
                 self.keys = []
                 self._iter = iter([])
 
     def __next__(self) -> Row:
         try:
-            return convert_row(self.row_type, next(self._iter))
+            # Stub gap: RowMapping is keyed by str *or* a Column expression, so
+            # its items() view is wider than the str keys a RowFactory takes.
+            return self.row_type(next(self._iter).items())  # type: ignore[arg-type]
         except StopIteration:
             self.close()
             raise
@@ -219,20 +206,6 @@ def normalize_table_name(name: str, max_bytes: int | None = None) -> str:
         while len(name.encode("utf-8")) > max_bytes:  # codepoint-safe byte trim
             name = name[:-1]
     return name
-
-
-def safe_url(url: str) -> str:
-    """Remove password from printed connection URLs.
-
-    Only the userinfo portion of the netloc is rewritten, so a ``:pw@``
-    sequence that happens to appear in the path or query is left intact.
-    """
-    parsed = urlparse(url)
-    if parsed.password is None:
-        return url
-    userinfo, _, host = parsed.netloc.rpartition("@")
-    user, _, _ = userinfo.partition(":")
-    return urlunparse(parsed._replace(netloc=f"{user}:*****@{host}"))
 
 
 def index_name(table: str, columns: list[str], prefix: str = "ix") -> str:

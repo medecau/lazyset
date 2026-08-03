@@ -45,7 +45,7 @@ nothing.
 Filtering on a column that does not exist on the table raises
 `NoSuchColumnError` (in 2.x this silently matched no rows).
 
-`_order_by`, `_limit`, `_offset`, `_step` and `_streamed` are reserved keyword
+`_order_by`, `_limit`, `_offset` and `_streamed` are reserved keyword
 arguments on `Table.find` — all leading-underscore, so they never collide with a
 column filter. A column whose name is not a valid keyword argument, or that
 would clash with a reserved modifier, can still be filtered through the `where=`
@@ -97,8 +97,8 @@ for row in db.query(statement):
 # With parameter binding:
 results = db.query('SELECT * FROM users WHERE age > :min_age', min_age=21)
 
-# For bind names that aren't valid keyword arguments (reserved words, or names
-# colliding with params / _step), pass a params mapping:
+# For bind names that aren't valid keyword arguments (reserved words, or a name
+# colliding with params itself), pass a params mapping:
 results = db.query('SELECT * FROM users WHERE country = :from', {'from': 'US'})
 ```
 

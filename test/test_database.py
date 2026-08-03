@@ -7,12 +7,12 @@ from collections import OrderedDict
 from datetime import datetime
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import make_url, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from lazyset import DatasetError, SchemaError, connect
 from lazyset.database import Database
-from lazyset.util import Results, safe_url
+from lazyset.util import Results
 
 from .sample_data import TEST_CITY_1, TEST_DATA
 
@@ -29,9 +29,24 @@ def test_valid_database_url(db):
 
 
 def test_database_repr(db):
-    # repr masks the password via safe_url; on a passwordless SQLite URL
-    # that is a no-op, but PostgreSQL/MySQL URLs carry one.
-    assert repr(db) == f"<Database({safe_url(db.url)})>"
+    # repr renders the URL through SQLAlchemy's own masking; on a passwordless
+    # SQLite URL that is a no-op, but PostgreSQL/MySQL URLs carry one.
+    rendered = make_url(db.url).render_as_string(hide_password=True)
+    assert repr(db) == f"<Database({rendered})>"
+
+
+def test_database_repr_masks_password():
+    # No connection is opened: create_engine only parses the URL.
+    rendered = repr(Database("postgresql://user:s3cret@localhost:5432/db"))
+    assert "s3cret" not in rendered
+    assert rendered == "<Database(postgresql://user:***@localhost:5432/db)>"
+
+
+def test_database_repr_after_close():
+    # close() nulls the engine; repr reads self.url, so it must not raise.
+    closed = connect("sqlite://")
+    closed.close()
+    assert repr(closed) == "<Database(sqlite://)>"
 
 
 def test_database_url_query_string(db):
@@ -235,22 +250,14 @@ def test_query_with_params(db, table):
 
 def test_query_params_mapping(db, table):
     # The params= mapping is the escape hatch for bind names that cannot be
-    # spelled as keyword arguments (here a reserved word); it also composes
-    # with the keyword-only _step.
+    # spelled as keyword arguments (here a reserved word).
     rows = list(
         db.query(
             "SELECT * FROM weather WHERE place = :in",
             {"in": TEST_CITY_1},
-            _step=1,
         )
     )
     assert len(rows) == 3, rows
-
-
-def test_query_step(db, table):
-    # _step=None disables chunked fetching (the only way to disable it).
-    rows = list(db.query("SELECT * FROM weather", _step=None))
-    assert len(rows) == len(TEST_DATA), rows
 
 
 def test_explicit_rollback(db):
