@@ -1615,9 +1615,10 @@ def test_create_column_rejects_inert_kwargs(table, kwarg):
 
 def test_create_column_server_default_applies(db):
     # The working alternative: the database owns the default, so it survives.
+    # string(255), not text: MySQL rejects a DEFAULT on a TEXT/BLOB column.
     tbl = db["server_default_col"]
     tbl.insert({"a": 1})
-    tbl.create_column("food", db.types.text, server_default="banana")
+    tbl.create_column("food", db.types.string(255), server_default="banana")
     tbl.insert({"a": 2})
     assert tbl.find_one(a=2)["food"] == "banana"
 

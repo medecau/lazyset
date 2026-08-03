@@ -998,7 +998,11 @@ class Table:
         — ``nullable``, ``server_default`` — can be set:
 
             table.create_column('req', db.types.text, nullable=False)
-            table.create_column('food', db.types.text, server_default='banana')
+            table.create_column('food', db.types.string(255),
+                                server_default='banana')
+
+        (MySQL rejects a ``DEFAULT`` on a ``TEXT``/``BLOB`` column, so a
+        server-defaulted string column wants an explicit length.)
 
         Python-side defaults (``default=`` / ``onupdate=``) are rejected: they
         live on the in-memory `Column`, which is discarded as soon as the table
