@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Lets the docs be republished without a dummy commit — the Pages deployment
+  # API returns a transient 500 often enough to need a manual retry.
+  workflow_dispatch:
 
 permissions:
   contents: read
