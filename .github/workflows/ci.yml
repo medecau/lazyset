@@ -110,8 +110,8 @@ jobs:
           enable-cache: true
       - run: uv sync --extra dev
       - name: Build API docs
-        run: uv run pdoc ./lazyset -o site/
-      - uses: actions/upload-pages-artifact@v3
+        run: make docs
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: site/
 
@@ -131,5 +131,8 @@ jobs:
       group: pages
       cancel-in-progress: false
     steps:
+      # Pages must already be enabled on the repo with build_type=workflow;
+      # actions/configure-pages' `enablement` input cannot do it, because it
+      # explicitly requires a PAT rather than the workflow's GITHUB_TOKEN.
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
