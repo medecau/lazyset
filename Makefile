@@ -1,43 +1,29 @@
+# everything is phony
+.PHONY: help fix check test docs clean
 
-all: clean test dists
+# 2 tabs before comments, 1 tab if there are dependencies
+# help target docs stuff for us
 
-# Every tool is invoked through `uv run` so it resolves from the project
-# environment. A bare `mypy`/`pytest` only works if the venv happens to be
-# active, and `make lint` failed outright with "mypy: No such file or
-# directory" otherwise.
+UV = uv
+RUN = $(UV) run
 
-.PHONY: docs
-docs:
-	uv run pdoc ./lazyset -o site/
+help:		## Show this help.
+	@grep '^[^#[:space:]\.].*:' Makefile
 
-.PHONY: test
-test:
-	uv run pytest
+check:		## Run linters and the type checker in check mode.
+	$(RUN) ruff format --check .
+	$(RUN) ruff check .
+	$(RUN) ty check
 
-.PHONY: lint
-lint:
-	uv run ruff check lazyset test
-	uv run mypy --strict lazyset
+fix:		## Run linters.
+	$(RUN) ruff format .
+	$(RUN) ruff check --fix .
 
-.PHONY: format
-format:
-	uv run ruff format lazyset test
+docs:		## Generate documentation.
+	$(RUN) pdoc ./lazyset -o site/
 
-.PHONY: format-check
-format-check:
-	uv run ruff format --check lazyset test
+test: check	## Run tests.
+	$(RUN) tox -p auto
 
-dists:
-	uv run python -m build
-
-release: dists
-	uv run twine upload dist/*
-
-.PHONY: clean
-clean:
-	rm -rf dist build .eggs
-	find . -name '*.egg-info' -exec rm -fr {} +
-	find . -name '*.egg' -exec rm -f {} +
-	find . -name '*.pyc' -exec rm -f {} +
-	find . -name '*.pyo' -exec rm -f {} +
-	find . -name '__pycache__' -exec rm -fr {} +
+clean:		## Clean up build artifacts.
+	rm -rf dist

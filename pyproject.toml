@@ -31,20 +31,34 @@ dependencies = [
     "alembic>=0.6.2",
 ]
 
+# Extras are the *user-facing* install surface: the DBAPI driver each non-SQLite
+# backend needs. Named after SQLAlchemy's own extras, since lazyset is a thin
+# layer over it. There is no `sqlite` extra — that driver is in the stdlib.
 [project.optional-dependencies]
+postgresql = ["psycopg2-binary"]
+# The `rsa` extra pulls in cryptography, which PyMySQL needs for MySQL 8's
+# default caching_sha2_password auth.
+mysql = ["PyMySQL[rsa]"]
+
+# PEP 735 group: tooling for working *on* lazyset, never part of what an
+# installer resolves for someone depending on it. `uv sync` installs it by
+# default; tox pulls it in via `dependency_groups` below.
+[dependency-groups]
 dev = [
-    "pytest-cov",
     "pytest",
+    "pytest-cov",
     "hypothesis",
-    "build",
-    "twine",
-    "ruff",
-    "mypy",
-    "psycopg2-binary",
-    "PyMySQL",
-    "cryptography",
-    "mutmut>=3.6.0",
+    "ruff>=0.16",
+    "ty",
     "pdoc",
+    "mutmut>=3.6.0",
+    "tox>=4.22",
+    # The backend drivers are spelled out rather than pulled in as
+    # `lazyset[mysql,postgresql]`. A self-referential requirement only resolves
+    # to the local project under uv; anything else resolves it against PyPI,
+    # where the `lazyset` name belongs to an unrelated project.
+    "psycopg2-binary",
+    "PyMySQL[rsa]",
 ]
 
 [project.urls]
@@ -58,9 +72,6 @@ path = "lazyset/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["lazyset"]
-
-[tool.pytest.ini_options]
-testpaths = ["test"]
 
 [tool.mutmut]
 # mutmut otherwise guesses the source directory from the *checkout* directory
@@ -88,3 +99,31 @@ select = [
 quote-style = "double"
 indent-style = "space"
 line-ending = "auto"
+
+[tool.tox]
+requires = ["tox>=4.22"]
+env_list = ["3.14", "3.10", "lint"]
+
+[tool.tox.env_run_base]
+description = "Run test under {base_python}"
+dependency_groups = ["dev"]
+# tox does not pass arbitrary environment variables through. Without this the
+# PostgreSQL and MySQL CI jobs export DATABASE_URL, tox drops it, and the suite
+# runs against SQLite while reporting that it covered the other backend.
+pass_env = ["DATABASE_URL"]
+commands = [["pytest"]]
+
+# Docstring `>>>` examples run on every pytest invocation rather than in a tox
+# env of their own, so an example that stops matching real output fails
+# everywhere. The guides' examples are covered by `test/test_docs.py`, which
+# runs each Markdown file as one session — see its module docstring.
+[tool.pytest.ini_options]
+addopts = "--doctest-modules"
+
+[tool.tox.env.lint]
+description = "Run linters"
+commands = [
+    ["ruff", "format", "--check", "."],
+    ["ruff", "check", "."],
+    ["ty", "check", "."],
+]

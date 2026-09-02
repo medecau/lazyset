@@ -11,7 +11,7 @@ import logging
 import threading
 import warnings
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, Literal, overload
+from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.mysql import insert as mysql_insert
@@ -51,6 +51,18 @@ if TYPE_CHECKING:
     from lazyset.database import Database
 
 log = logging.getLogger(__name__)
+
+
+def _as_row(rows: "WriteRow | Iterable[WriteRow]") -> WriteRow:
+    """Assert the shape-dispatched single-row branch of a write verb.
+
+    ``isinstance(rows, Mapping)`` cannot prove ``rows`` is a `WriteRow`: a
+    ``Mapping`` is *also* an ``Iterable`` (of its keys), so a mapping keyed by
+    rows inhabits both arms of the union. Rows are column-name-keyed by
+    contract, so the single-row branch is the intended reading; this states
+    that in one place instead of at every dispatch site.
+    """
+    return cast(WriteRow, rows)
 
 
 class Table:
@@ -220,7 +232,7 @@ class Table:
         to a text field.
         """
         if isinstance(rows, Mapping):
-            return self._insert_one(rows, auto_create, types)
+            return self._insert_one(_as_row(rows), auto_create, types)
         return self._insert_rows(rows, chunk_size, auto_create, types)
 
     def _insert_one(
@@ -376,7 +388,7 @@ class Table:
         which is lower than the summed count when input rows repeat a key.
         """
         if isinstance(rows, Mapping):
-            return self._update_one(rows, keys, auto_create, types)
+            return self._update_one(_as_row(rows), keys, auto_create, types)
         return self._update_rows(rows, keys, chunk_size, auto_create, types)
 
     def _update_one(
@@ -571,7 +583,9 @@ class Table:
                 "upsert() requires at least one key column as the conflict arbiter."
             )
         if isinstance(rows, Mapping):
-            return self._upsert_rows([rows], keys, chunk_size, auto_create, types)
+            return self._upsert_rows(
+                [_as_row(rows)], keys, chunk_size, auto_create, types
+            )
         return self._upsert_rows(rows, keys, chunk_size, auto_create, types)
 
     def _upsert_rows(
@@ -986,7 +1000,7 @@ class Table:
         self,
         name: str,
         type: ColumnType,
-        **kwargs: object,
+        **kwargs: Any,
     ) -> None:
         """Create a new column ``name`` of a specified type.
 
@@ -1023,7 +1037,7 @@ class Table:
         if self.has_column(name):
             log.debug(f"Column exists: {name}")
             return
-        self._sync_table((Column(name, type, **kwargs),))  # type: ignore[arg-type]
+        self._sync_table((Column(name, type, **kwargs),))
 
     def drop_column(self, name: str) -> None:
         """
@@ -1111,7 +1125,7 @@ class Table:
         columns: Sequence[str],
         name: str | None = None,
         unique: bool = False,
-        **kw: object,
+        **kw: Any,
     ) -> None:
         """Create an index to speed up queries on a table.
 
@@ -1175,7 +1189,7 @@ class Table:
                 if unique:
                     kw["unique"] = True
 
-                idx = Index(name, *columns_, **kw)  # type: ignore[arg-type]
+                idx = Index(name, *columns_, **kw)
                 if unique:
                     # Existing duplicate key values make the arbiter index
                     # impossible to build; surface that clearly, never swallow.
@@ -1291,7 +1305,9 @@ class Table:
             _limit=1,
             _offset=_offset,
             where=where,
-            **kwargs,  # type: ignore[arg-type]
+            # _reject_reserved_kwargs above guarantees no key collides with
+            # find's `_`-prefixed modifiers; the type system cannot see that.
+            **kwargs,  # ty: ignore[invalid-argument-type]
         )
         try:
             for row in resiter:
@@ -1355,7 +1371,10 @@ class Table:
         clauses = []
         for column in args:
             if isinstance(column, ClauseElement):
-                clauses.append(column)
+                # Narrowing by ClauseElement leaves `str & ClauseElement` in
+                # play (a str subclass could implement it); the declared
+                # parameter type says a non-str arg is a boolean clause.
+                clauses.append(cast(ColumnElement[bool], column))
             else:
                 # Mirror _args_to_clause/_keys_to_args: normalize before both
                 # the has_column check and the exact-match column lookup, or a

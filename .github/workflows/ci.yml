@@ -21,18 +21,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
-      - run: uv sync --extra dev
-      - name: Lint (ruff + mypy)
-        run: uv run make lint
-      - name: Format check
-        run: uv run make format-check
+      - run: uv sync --group dev
+      - name: Lint (ruff + ty)
+        run: make check
       - name: Run SQLite tests
         env:
           DATABASE_URL: "sqlite:///:memory:"
@@ -74,7 +72,7 @@ jobs:
         with:
           enable-cache: true
           python-version: "3.13"
-      - run: uv sync --extra dev
+      - run: uv sync --group dev
       - name: Run PostgreSQL tests
         timeout-minutes: 10
         env:
@@ -101,8 +99,17 @@ jobs:
           enable-cache: true
       - name: Build sdist + wheel
         run: uv build
-      - name: Check metadata
-        run: uvx twine check dist/*
+      # git is the only distribution channel, so the packaging check that
+      # matters is that `pip install git+…` on this commit imports cleanly —
+      # not that the metadata would satisfy a PyPI upload. The `@<sha>` is
+      # required, not decorative: actions/checkout leaves a shallow, detached
+      # clone with no refs/remotes/origin/HEAD, which is what a bare
+      # `git+file://…` resolves against, and it dies with "ambiguous argument".
+      - name: Smoke-test the git install path
+        run: >-
+          uv run --no-project
+          --with "lazyset @ git+file://${{ github.workspace }}@${{ github.sha }}"
+          python -c "import lazyset; print(lazyset.__version__)"
 
   docs:
     runs-on: ubuntu-latest
@@ -111,7 +118,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-      - run: uv sync --extra dev
+      - run: uv sync --group dev
       - name: Build API docs
         run: make docs
       - uses: actions/upload-pages-artifact@v5

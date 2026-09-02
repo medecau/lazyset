@@ -9,12 +9,71 @@ changes must be reconstructed from revision history.*
   is no compatibility shim. Changes below are relative to dataset 2.0.0.
   - **Module renamed** *(breaking)*: the import name is now `lazyset` (was
     `dataset`) — `import lazyset` / `from lazyset import connect`; the
-    split-name period (PyPI `lazyset`, `import dataset`) is over.
+    split-name period (distribution and import disagreeing) is over.
+  - **git-only distribution** *(breaking)*: lazyset is **not published to
+    PyPI** — the name is too close to an unrelated project already there.
+    Install from git instead, pinning a tag for anything reproducible:
+    `pip install git+https://github.com/medecau/lazyset@v0.1.0`. `cd.yml` no
+    longer has a PyPI step; a tag push now re-tests, builds the sdist/wheel,
+    smoke-tests the `pip install git+…` path against that commit, and cuts a
+    GitHub Release with the artifacts attached. `twine` is out of the dev
+    dependencies and CI's metadata check is replaced by that same install
+    smoke test — for a git-only project, "does it install and import" is the
+    contract, not "would PyPI accept the metadata".
+  - **`postgresql` / `mysql` extras; dev deps moved to a dependency group**:
+    the two backends that need a DBAPI driver now have an extra that installs
+    it — `pip install "lazyset[postgresql] @ git+https://…@v0.1.0"`, likewise
+    `[mysql]` (`PyMySQL[rsa]`, whose `rsa` extra brings the cryptography that
+    MySQL 8's `caching_sha2_password` auth needs). SQLite still needs nothing.
+    The development tooling moves out of `[project.optional-dependencies] dev`
+    into a PEP 735 `[dependency-groups] dev`, so it is no longer part of the
+    installable surface: `uv sync --extra dev` becomes `uv sync --group dev`
+    (or plain `uv sync`, which installs the group by default). `build` is
+    dropped — nothing invokes it, CI builds with `uv build` — and `tox>=4.22`
+    is added for the new `[tool.tox]` config, 4.22 being the version that
+    learned `dependency_groups`. ruff is floored at `>=0.16`, the version that
+    formats Python inside Markdown fences: `README.md` and `docs/*.md` are now
+    covered by the format gate (17 files, up from 12) and their examples were
+    reformatted to the `quote-style = "double"` the project already declared.
+  - **The guides are executed**: `test/test_docs.py` runs `README.md`,
+    `docs/quickstart.md` and `docs/queries.md` top to bottom as one session
+    each — fenced ```python blocks are `exec`'d, ```pycon transcripts are
+    checked with the stdlib `doctest` module, and both share one namespace, so
+    a guide is tested the way a reader reads it. A fence opts out with an HTML
+    comment above it — one that binds to no fence is an error, not a silent
+    no-op: `<!-- example: skip -->` (not runnable —
+    placeholder metasyntax, another backend's driver, a table the guide never
+    creates; still syntax-checked) or `<!-- example: isolated -->` (runnable,
+    but run against a copy of the namespace so a side example that rebinds or
+    closes `db` cannot poison the rest). `addopts` is now `--doctest-modules`,
+    which puts docstring `>>>` examples in every pytest run; the separate
+    `doctest` tox env is gone as redundant. This caught four stale claims
+    inherited from upstream: `db['user'].columns` was documented as
+    `['id', 'country', 'age', 'name', 'gender']` when lazyset reports DDL
+    order, `['id', 'name', 'age', 'country', 'gender']`; the quickstart closed
+    `db` and kept writing through it; an IN-query example filtered `value=`
+    where the line above it filtered `category=`; and `docs/queries.md` never
+    built the table its examples query, which it now does in an opening block.
   - **Docs → pdoc** *(dev-facing)*: the Sphinx tree is replaced by pdoc — the
     API reference is generated from docstrings (`make docs` → `site/`) and
     published to GitHub Pages by CI, with the quickstart/queries guides folded
     in as Markdown via pdoc's `.. include::`. `Types` is re-exported at the top
     level (`lazyset.Types`) so it appears in the generated reference.
+  - **mypy → ty** *(dev-facing)*: the type checker is now **ty** (Astral).
+    `mypy` is dropped from the dev dependencies and `make lint` /
+    `make format-check` are folded into `make check` (ruff format `--check` +
+    ruff lint + `ty check`), which `make test` now depends on. Coverage widens
+    from `lazyset/` to the whole repo — `test/` is type-checked too. ty infers
+    the target version from `requires-python`, so it checks against the 3.10
+    floor with no `[tool.ty]` config. Three call sites changed to satisfy ty's
+    stricter narrowing: the `Mapping`-vs-`Iterable[Mapping]` shape dispatch in
+    `insert`/`update`/`upsert` now goes through `_as_row()` (a `Mapping` is
+    also an `Iterable` of its keys, so `isinstance` cannot decide it),
+    `create_column`/`create_index` take `**kwargs: Any` instead of
+    `**kwargs: object` (which forced a suppression on every SQLAlchemy
+    passthrough), and `distinct()` casts its clause arm. Note that ty does not
+    honour `# type: ignore[<mypy-code>]`; those became `# ty: ignore[<rule>]`
+    or a bare `# type: ignore`.
   - **Unified write verbs** *(breaking)*: `insert`, `upsert`, `update` and
     `delete` each take **one `Mapping` or any `Iterable` of Mappings**
     (generators included), dispatched by shape via `@overload`; `chunk_size`

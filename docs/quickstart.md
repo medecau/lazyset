@@ -15,15 +15,17 @@ To connect to a database you identify it by its
 a string of the form `"dialect://user:password@host/dbname"`. Here are a few
 examples for different database backends:
 
+<!-- example: skip -->
+
 ```python
 # connecting to a SQLite database
-db = lazyset.connect('sqlite:///mydatabase.db')
+db = lazyset.connect("sqlite:///mydatabase.db")
 
 # connecting to a MySQL database with user and password
-db = lazyset.connect('mysql://user:password@localhost/mydatabase')
+db = lazyset.connect("mysql://user:password@localhost/mydatabase")
 
 # connecting to a PostgreSQL database
-db = lazyset.connect('postgresql://scott:tiger@localhost:5432/mydatabase')
+db = lazyset.connect("postgresql://scott:tiger@localhost:5432/mydatabase")
 ```
 
 It is also possible to define the URL as an environment variable called
@@ -34,8 +36,13 @@ db = lazyset.connect()
 ```
 
 Depending on which database you're using, you may also have to install the
-bindings for it. SQLite is included in the Python core, but PostgreSQL requires
-`psycopg2` and MySQL requires `PyMySQL`.
+bindings for it. SQLite is included in the Python core; PostgreSQL and MySQL
+each need a DBAPI driver, which the matching extra installs:
+
+```bash
+pip install "lazyset[postgresql] @ git+https://github.com/medecau/lazyset@v0.1.0"
+pip install "lazyset[mysql] @ git+https://github.com/medecau/lazyset@v0.1.0"
+```
 
 ## Storing data
 
@@ -47,25 +54,25 @@ missing table or column raises instead of creating it.)
 
 ```python
 # get a reference to the table 'user'
-table = db['user']
+table = db["user"]
 ```
 
 Storing data is then a single function call: pass a `dict` to `Table.insert`.
-Note that you don't need to create the columns *name* and *age* — lazyset does
+Note that you don't need to create the columns _name_ and _age_ — lazyset does
 that automatically:
 
 ```python
 # Insert a new record.
-table.insert(dict(name='John Doe', age=46, country='China'))
+table.insert(dict(name="John Doe", age=46, country="China"))
 
 # lazyset creates "missing" columns any time you insert a dict with an unknown key
-table.insert(dict(name='Jane Doe', age=37, country='France', gender='female'))
+table.insert(dict(name="Jane Doe", age=37, country="France", gender="female"))
 ```
 
 Updating existing entries is easy, too:
 
 ```python
-table.update(dict(name='John Doe', age=47), ['name'])
+table.update(dict(name="John Doe", age=47), ["name"])
 ```
 
 The list of filter columns given as the second argument selects which rows to
@@ -84,17 +91,19 @@ so they work through a `with` statement:
 
 ```python
 with lazyset.connect() as tx:
-    tx['user'].insert(dict(name='John Doe', age=46, country='China'))
+    tx["user"].insert(dict(name="John Doe", age=46, country="China"))
 ```
 
 You get the same functionality by invoking `Database.begin`, `Database.commit`
 and `Database.rollback` explicitly:
 
+<!-- example: isolated -->
+
 ```python
 db = lazyset.connect()
 db.begin()
 try:
-    db['user'].insert(dict(name='John Doe', age=46, country='China'))
+    db["user"].insert(dict(name="John Doe", age=46, country="China"))
     db.commit()
 except Exception:
     db.rollback()
@@ -102,12 +111,14 @@ except Exception:
 
 Nested transactions are supported too:
 
+<!-- example: isolated -->
+
 ```python
 db = lazyset.connect()
 with db as tx1:
-    tx1['user'].insert(dict(name='John Doe', age=46, country='China'))
+    tx1["user"].insert(dict(name="John Doe", age=46, country="China"))
     with db as tx2:
-        tx2['user'].insert(dict(name='Jane Doe', age=37, country='France'))
+        tx2["user"].insert(dict(name="Jane Doe", age=37, country="France"))
 ```
 
 ## Closing connections
@@ -115,8 +126,10 @@ with db as tx1:
 When you're done with a database, call `Database.close` to release all
 connections back to the pool and dispose of the engine:
 
+<!-- example: isolated -->
+
 ```python
-db = lazyset.connect('sqlite:///mydb.db')
+db = lazyset.connect("sqlite:///mydb.db")
 # ... do work ...
 db.close()
 ```
@@ -138,14 +151,14 @@ first. Let's find out which tables are stored in the database:
 Now, list all columns in the table `user`:
 
 ```pycon
->>> print(db['user'].columns)
-['id', 'country', 'age', 'name', 'gender']
+>>> print(db["user"].columns)
+['id', 'name', 'age', 'country', 'gender']
 ```
 
 Using `len()` we get the total number of rows in a table:
 
 ```pycon
->>> print(len(db['user']))
+>>> print(len(db["user"]))
 2
 ```
 
@@ -155,31 +168,31 @@ Now let's get some real data out. Calling `Table.find` with no filter returns
 every row:
 
 ```python
-users = db['user'].find()
+users = db["user"].find()
 ```
 
 To iterate over all rows, iterate the table directly:
 
 ```python
-for user in db['user']:
-    print(user['age'])
+for user in db["user"]:
+    print(user["age"])
 ```
 
 We can search for specific entries using `Table.find` and `Table.find_one`:
 
 ```python
 # All users from China
-chinese_users = table.find(country='China')
+chinese_users = table.find(country="China")
 
 # Get a specific user
-john = table.find_one(name='John Doe')
+john = table.find_one(name="John Doe")
 
 # Find multiple at once
 winners = table.find(id=[1, 3, 7])
 
 # Find by comparison operator
-elderly_users = table.find(age={'>=': 70})
-possible_customers = table.find(age={'between': [21, 80]})
+elderly_users = table.find(age={">=": 70})
+possible_customers = table.find(age={"between": [21, 80]})
 
 # Use the underlying SQLAlchemy directly
 elderly_users = table.find(table.table.columns.age >= 70)
@@ -192,27 +205,32 @@ more columns:
 
 ```python
 # Get one user per country
-db['user'].distinct('country')
+db["user"].distinct("country")
 ```
 
 Finally, use the `row_type` parameter to choose the container rows are returned
 in. It defaults to `dict`; pass any callable that accepts the row's columns as
 keyword arguments and returns a mapping:
 
+<!-- example: isolated -->
+
 ```python
 from collections import OrderedDict
 
-db = lazyset.connect('sqlite:///mydatabase.db', row_type=OrderedDict)
+db = lazyset.connect("sqlite:///mydatabase.db", row_type=OrderedDict)
 ```
 
 For example, a small `dict` subclass that also exposes columns as attributes
 (`row.name` as well as `row['name']`) works as a `row_type`:
 
+<!-- example: isolated -->
+
 ```python
 class AttrDict(dict):
     __getattr__ = dict.__getitem__
 
-db = lazyset.connect('sqlite:///mydatabase.db', row_type=AttrDict)
+
+db = lazyset.connect("sqlite:///mydatabase.db", row_type=AttrDict)
 ```
 
 ## Running custom SQL queries
@@ -221,9 +239,9 @@ Of course the main reason you're using a database is the full power of SQL.
 Here's how you run raw queries with lazyset:
 
 ```python
-result = db.query('SELECT country, COUNT(*) c FROM user GROUP BY country')
+result = db.query("SELECT country, COUNT(*) c FROM user GROUP BY country")
 for row in result:
-    print(row['country'], row['c'])
+    print(row["country"], row["c"])
 ```
 
 `Database.query` can also run
@@ -231,8 +249,8 @@ for row in result:
 for programmatic construction of more complex queries:
 
 ```python
-table = db['user'].table
-statement = table.select().where(table.c.name.like('%John%'))
+table = db["user"].table
+statement = table.select().where(table.c.name.like("%John%"))
 result = db.query(statement)
 ```
 

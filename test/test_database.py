@@ -232,7 +232,9 @@ def test_query_read_is_not_committed(db, table):
 
 def test_table_cache_updates(db):
     tbl1 = db.table("people")
-    data = OrderedDict([("first_name", "John"), ("last_name", "Smith")])
+    data: OrderedDict[str, str | int] = OrderedDict(
+        [("first_name", "John"), ("last_name", "Smith")]
+    )
     tbl1.insert(data)
     data["id"] = 1
     tbl2 = db.table("people")
@@ -470,6 +472,7 @@ def test_constructor_defaults_direct():
 
 def test_constructor_kwargs_forwarded(db):
     d = Database("sqlite://", engine_kwargs={"echo": True})
+    assert d.engine is not None
     assert d.engine.echo is True
     d.close()
 
@@ -492,6 +495,7 @@ def test_connect_forwards_kwargs():
     db.close()
 
     db = connect(engine_kwargs={"echo": True})
+    assert db.engine is not None
     assert db.engine.echo is True
     db.close()
 
@@ -559,6 +563,7 @@ def test_close_atomic_with_concurrent_use(tmp_path):
     db = connect(f"sqlite:///{tmp_path / 'close.db'}")
     db["t"].insert({"a": 1})
 
+    assert db.engine is not None
     original_dispose = db.engine.dispose
     in_dispose = threading.Event()
     resume = threading.Event()
@@ -568,7 +573,8 @@ def test_close_atomic_with_concurrent_use(tmp_path):
         resume.wait(timeout=5)
         return original_dispose(*args, **kwargs)
 
-    db.engine.dispose = slow_dispose
+    # Monkeypatching a bound method is untypeable by construction.
+    db.engine.dispose = slow_dispose  # type: ignore
 
     result = {}
 

@@ -1420,8 +1420,10 @@ def test_sync_table_concurrent_different_columns(tmp_path):
             except Exception as e:  # noqa: BLE001
                 errors.append(e)
 
-        type(tbl)._reflect_table = synced_reflect
-        type(tbl)._threading_warn = synced_warn
+        # Patching the class's methods for the duration of the race; the
+        # stand-ins deliberately have looser signatures than the originals.
+        type(tbl)._reflect_table = synced_reflect  # type: ignore
+        type(tbl)._threading_warn = synced_warn  # type: ignore
         try:
             threads = [
                 threading.Thread(target=writer, args=("a",)),

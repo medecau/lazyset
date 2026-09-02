@@ -18,45 +18,50 @@ jobs:
         with:
           enable-cache: true
       # Optional signed-tag verification (default OFF). Fragile — it needs
-      # fetch-depth: 0 on checkout and a reachable public key — and low
-      # marginal value: Trusted Publishing already binds provenance to the
-      # repo + workflow. Enable by importing the signer's key and uncommenting.
+      # fetch-depth: 0 on checkout and a reachable public key. Since the only
+      # distribution channel is git, the tag *is* the artifact people install,
+      # so this is worth more here than it was under Trusted Publishing.
+      # Enable by importing the signer's key and uncommenting.
       # - name: Verify signed tag
       #   run: |
       #     gpg --import signer.gpg
       #     git verify-tag "${GITHUB_REF_NAME}"
-      - run: uv sync --extra dev
+      - run: uv sync --group dev
       - name: Run SQLite tests
         env:
           DATABASE_URL: "sqlite:///:memory:"
         run: uv run make test
       - name: Build sdist + wheel
         run: uv build
-      - name: Check metadata
-        run: uvx twine check dist/*
+      # The documented install is `pip install git+…@<tag>`, so the check that
+      # matters is that installing this very commit from git imports cleanly.
+      # The `@<sha>` is required: actions/checkout leaves a shallow, detached
+      # clone with no refs/remotes/origin/HEAD for a bare URL to resolve.
+      - name: Smoke-test the git install path
+        run: >-
+          uv run --no-project
+          --with "lazyset @ git+file://${{ github.workspace }}@${{ github.sha }}"
+          python -c "import lazyset; print(lazyset.__version__)"
       - uses: actions/upload-artifact@v4
         with:
           name: dist
           path: dist/
 
-  publish:
+  release:
     needs: test
     runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/project/lazyset/
     permissions:
-      id-token: write   # OIDC Trusted Publishing — no PyPI token/secret
       contents: write   # create the GitHub Release
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: dist
           path: dist/
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+      # No PyPI step: lazyset is not published there (the name is taken by a
+      # different project), so the tag plus these attached artifacts are the
+      # release. Anything else installs with `pip install git+…@<tag>`.
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: gh release create "${GITHUB_REF_NAME}" --generate-notes
+        run: gh release create "${GITHUB_REF_NAME}" --generate-notes dist/*

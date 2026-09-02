@@ -74,7 +74,7 @@ def test_index_name_distinct_for_ambiguous_columns():
 def test_normalize_error_messages():
     """Anchored messages pin the exact wording, not just that *some* error fires."""
     with pytest.raises(SchemaError, match=r"^123 is not a valid column name\.$"):
-        normalize_column_name(123)  # type: ignore[arg-type]
+        normalize_column_name(123)  # type: ignore
 
     long_name = "a" * 63 + "."
     expected = re.escape(f"{long_name!r} is not a valid column name.")
@@ -82,7 +82,7 @@ def test_normalize_error_messages():
         normalize_column_name(long_name)
 
     with pytest.raises(SchemaError, match=r"^Invalid table name: 123$"):
-        normalize_table_name(123)  # type: ignore[arg-type]
+        normalize_table_name(123)  # type: ignore
 
     with pytest.raises(SchemaError, match=r"^Invalid table name: ''$"):
         normalize_table_name("  ")
@@ -189,7 +189,7 @@ def test_normalize_column_key_none():
 
 
 def test_normalize_column_key_exact():
-    assert normalize_column_key(123) is None  # type: ignore[arg-type]
+    assert normalize_column_key(123) is None  # type: ignore
     # Internal spaces are significant (only surrounding whitespace is folded).
     assert normalize_column_key("a b") == "A B"
     assert normalize_column_key("  a b  ") == "A B"

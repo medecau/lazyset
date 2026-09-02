@@ -1,25 +1,42 @@
 # Advanced filters
 
 lazyset provides two ways to run queries: `Table.find` and `Database.query`. The
-table find helper provides limited but simple filtering:
+examples below all run against one small `user` table:
 
 ```python
+import lazyset
+
+db = lazyset.connect("sqlite:///:memory:")
+table = db["user"]
+table.insert(dict(name="John Doe", age=46, country="China", city="Beijing"))
+table.insert(dict(name="Jane Doe", age=37, country="France", city="Paris"))
+```
+
+The table find helper provides limited but simple filtering — a column name
+mapped to an operator and a value:
+
+<!-- example: skip -->
+```python
 results = table.find(column={operator: value})
-# e.g.:
-results = table.find(name={'like': '%mole rat%'})
+```
+
+With real names in place of the placeholders:
+
+```python
+results = table.find(name={"like": "%Doe%"})
 ```
 
 A special form is keyword searches on specific columns:
 
 ```python
-results = table.find(value=5)
+results = table.find(age=46)
 # equal to:
-results = table.find(value={'=': 5})
+results = table.find(age={"=": 46})
 
 # Lists, tuples and sets are turned into IN queries:
-results = table.find(category=('foo', 'bar'))
+results = table.find(country=("China", "France"))
 # equal to:
-results = table.find(value={'in': ('foo', 'bar')})
+results = table.find(country={"in": ("China", "France")})
 ```
 
 The following comparison operators are supported:
@@ -51,12 +68,13 @@ column filter. A column whose name is not a valid keyword argument, or that
 would clash with a reserved modifier, can still be filtered through the `where=`
 mapping (or a positional SQLAlchemy core expression, see below):
 
+<!-- example: skip -->
 ```python
 # filter a column literally named "_limit"
-results = table.find(where={'_limit': 5})
+results = table.find(where={"_limit": 5})
 
 # order by a real column named "created" (modifiers take column names)
-results = table.find(status='open', _order_by='created')
+results = table.find(status="open", _order_by="created")
 ```
 
 You can also pass
@@ -70,14 +88,14 @@ from sqlalchemy import or_
 # Get a column object:
 city = table.table.columns.city
 # Use a SQLAlchemy clause:
-results = table.find(city.ilike('amsterda%'))
+results = table.find(city.ilike("amsterda%"))
 
 # Combine with OR:
 country = table.table.columns.country
-results = table.find(or_(city == 'Amsterdam', country == 'Germany'))
+results = table.find(or_(city == "Amsterdam", country == "Germany"))
 
 # Combine SQLAlchemy clauses with keyword filters:
-results = table.find(city.ilike('new%'), country='US')
+results = table.find(city.ilike("new%"), country="US")
 ```
 
 These clauses also work with `Table.count`, `Table.find_one`, and
@@ -89,17 +107,18 @@ To run more complex queries with JOINs, or GROUP BY-style aggregation, use
 `Database.query` to run raw SQL. It also supports parameterisation to avoid SQL
 injection:
 
+<!-- example: skip -->
 ```python
-statement = 'SELECT user, COUNT(*) c FROM photos GROUP BY user'
+statement = "SELECT user, COUNT(*) c FROM photos GROUP BY user"
 for row in db.query(statement):
-    print(row['user'], row['c'])
+    print(row["user"], row["c"])
 
 # With parameter binding:
-results = db.query('SELECT * FROM users WHERE age > :min_age', min_age=21)
+results = db.query("SELECT * FROM users WHERE age > :min_age", min_age=21)
 
 # For bind names that aren't valid keyword arguments (reserved words, or a name
 # colliding with params itself), pass a params mapping:
-results = db.query('SELECT * FROM users WHERE country = :from', {'from': 'US'})
+results = db.query("SELECT * FROM users WHERE country = :from", {"from": "US"})
 ```
 
 For fully programmatic, composable query building, consider using

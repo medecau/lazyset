@@ -112,9 +112,7 @@ class Results(Iterator[Row]):
 
     def __next__(self) -> Row:
         try:
-            # Stub gap: RowMapping is keyed by str *or* a Column expression, so
-            # its items() view is wider than the str keys a RowFactory takes.
-            return self.row_type(next(self._iter).items())  # type: ignore[arg-type]
+            return self.row_type(next(self._iter).items())
         except StopIteration:
             self.close()
             raise
