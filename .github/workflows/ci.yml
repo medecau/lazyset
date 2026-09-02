@@ -31,10 +31,15 @@ jobs:
       - run: uv sync --group dev
       - name: Lint (ruff + ty)
         run: make check
+      # `pytest`, not `make test`: the matrix already pins one interpreter per
+      # job, whereas `make test` shells out to `tox -p auto`, which would run
+      # tox's whole env_list (3.14, 3.10, lint) inside every job — against
+      # interpreters setup-uv did not install. The matrix is a superset of that
+      # env_list, and `make check` above covers the lint env.
       - name: Run SQLite tests
         env:
           DATABASE_URL: "sqlite:///:memory:"
-        run: uv run make test
+        run: uv run pytest
 
   test-databases:
     runs-on: ubuntu-latest
@@ -78,7 +83,7 @@ jobs:
         env:
           DATABASE_URL: "postgresql://postgres:postgres@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/dataset"
           PGOPTIONS: "-c lock_timeout=10s -c deadlock_timeout=1s"
-        run: uv run make test
+        run: uv run pytest
       - name: Configure MySQL lock timeout
         run: |
           mysql -h 127.0.0.1 -P ${{ job.services.mysql.ports['3306'] }} \
@@ -88,7 +93,7 @@ jobs:
         timeout-minutes: 10
         env:
           DATABASE_URL: "mysql+pymysql://mysql:mysql@127.0.0.1:${{ job.services.mysql.ports['3306'] }}/dataset?charset=utf8"
-        run: uv run make test
+        run: uv run pytest
 
   build:
     runs-on: ubuntu-latest

@@ -27,10 +27,14 @@ jobs:
       #     gpg --import signer.gpg
       #     git verify-tag "${GITHUB_REF_NAME}"
       - run: uv sync --group dev
+      - name: Lint (ruff + ty)
+        run: make check
+      # `pytest`, not `make test` — the latter goes through `tox -p auto`, which
+      # wants an interpreter per env in tox's env_list; the job has exactly one.
       - name: Run SQLite tests
         env:
           DATABASE_URL: "sqlite:///:memory:"
-        run: uv run make test
+        run: uv run pytest
       - name: Build sdist + wheel
         run: uv build
       # The documented install is `pip install git+…@<tag>`, so the check that
