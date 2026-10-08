@@ -29,9 +29,13 @@ changes must be reconstructed from revision history.*
     into a PEP 735 `[dependency-groups] dev`, so it is no longer part of the
     installable surface: `uv sync --extra dev` becomes `uv sync --group dev`
     (or plain `uv sync`, which installs the group by default). `build` is
-    dropped — nothing invokes it, CI builds with `uv build` — and `tox>=4.22`
-    is added for the new `[tool.tox]` config, 4.22 being the version that
-    learned `dependency_groups`. ruff is floored at `>=0.16`, the version that
+    dropped — nothing invokes it, CI builds with `uv build` — and so are
+    `pytest-cov` (nothing passed `--cov`; `coverage` itself stays, as a mutmut
+    dependency) and tox: `make test` loops `uv run --python <v> pytest` over the
+    oldest and newest supported Python instead, and `.github/dependabot.yml` is
+    deleted (version updates were never enabled on this fork; CI's
+    `dep-ranges` job covers "the newest allowed versions still work"). ruff is
+    floored at `>=0.16`, the version that
     formats Python inside Markdown fences: `README.md` and `docs/*.md` are now
     covered by the format gate (17 files, up from 12) and their examples were
     reformatted to the `quote-style = "double"` the project already declared.
@@ -47,7 +51,7 @@ changes must be reconstructed from revision history.*
     but run against a copy of the namespace so a side example that rebinds or
     closes `db` cannot poison the rest). `addopts` is now `--doctest-modules`,
     which puts docstring `>>>` examples in every pytest run; the separate
-    `doctest` tox env is gone as redundant. This caught four stale claims
+    `doctest` env is gone as redundant. This caught four stale claims
     inherited from upstream: `db['user'].columns` was documented as
     `['id', 'country', 'age', 'name', 'gender']` when lazyset reports DDL
     order, `['id', 'name', 'age', 'country', 'gender']`; the quickstart closed

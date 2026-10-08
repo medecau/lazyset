@@ -32,10 +32,9 @@ jobs:
       - name: Lint (ruff + ty)
         run: make check
       # `pytest`, not `make test`: the matrix already pins one interpreter per
-      # job, whereas `make test` shells out to `tox -p auto`, which would run
-      # tox's whole env_list (3.14, 3.10, lint) inside every job — against
-      # interpreters setup-uv did not install. The matrix is a superset of that
-      # env_list, and `make check` above covers the lint env.
+      # job, whereas `make test` loops over the oldest and newest Python itself,
+      # so every job would quietly run both instead of the one it was assigned.
+      # The matrix is a superset of that loop, and `make check` above lints.
       - name: Run SQLite tests
         env:
           DATABASE_URL: "sqlite:///:memory:"

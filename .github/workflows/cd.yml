@@ -29,8 +29,8 @@ jobs:
       - run: uv sync --group dev
       - name: Lint (ruff + ty)
         run: make check
-      # `pytest`, not `make test` — the latter goes through `tox -p auto`, which
-      # wants an interpreter per env in tox's env_list; the job has exactly one.
+      # `pytest`, not `make test` — the latter loops over two Python versions,
+      # and this gate only needs the one setup-uv installed.
       - name: Run SQLite tests
         env:
           DATABASE_URL: "sqlite:///:memory:"

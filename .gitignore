@@ -6,7 +6,7 @@
 dist/*
 build/*
 site/
-.tox/*
+.venv-*/
 .vscode/*
 .DS_Store
 .watchr
