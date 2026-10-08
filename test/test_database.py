@@ -289,6 +289,20 @@ def test_query_params_mapping(db, table):
     assert len(rows) == 3, rows
 
 
+def test_select_star_after_auto_added_column(db):
+    # psycopg 3 server-side-prepares a statement once it has run five times on
+    # a connection, and lazyset keeps connections open while it adds columns
+    # on the fly. A prepared `SELECT *` must not outlive that schema change
+    # (PostgreSQL: "cached plan must not change result type").
+    tbl = db["prepared_star"]
+    tbl.insert({"a": 1})
+    for _ in range(6):
+        assert len(list(db.query("SELECT * FROM prepared_star"))) == 1
+    tbl.insert({"a": 2, "b": 3})
+    rows = list(db.query("SELECT * FROM prepared_star"))
+    assert sorted(rows[0]) == ["a", "b", "id"], rows
+
+
 def test_explicit_rollback(db):
     tbl = db["explicit_rollback"]
     tbl.insert({"a": 1})

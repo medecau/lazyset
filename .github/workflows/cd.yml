@@ -41,11 +41,15 @@ jobs:
       # matters is that installing this very commit from git imports cleanly.
       # The `@<sha>` is required: actions/checkout leaves a shallow, detached
       # clone with no refs/remotes/origin/HEAD for a bare URL to resolve.
+      # Both extras, so each engine import proves its extra ships the driver
+      # SQLAlchemy loads for the documented URL (see ci.yml's build job).
       - name: Smoke-test the git install path
         run: >-
           uv run --no-project
-          --with "lazyset @ git+file://${{ github.workspace }}@${{ github.sha }}"
-          python -c "import lazyset; print(lazyset.__version__)"
+          --with "lazyset[postgresql,mysql] @ git+file://${{ github.workspace }}@${{ github.sha }}"
+          python -c "import lazyset; print(lazyset.__version__);
+          lazyset.connect('postgresql://u:p@localhost/db');
+          lazyset.connect('mysql+pymysql://u:p@localhost/db')"
       - uses: actions/upload-artifact@v4
         with:
           name: dist

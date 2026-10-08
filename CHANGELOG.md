@@ -23,8 +23,12 @@ changes must be reconstructed from revision history.*
   - **`postgresql` / `mysql` extras; dev deps moved to a dependency group**:
     the two backends that need a DBAPI driver now have an extra that installs
     it — `pip install "lazyset[postgresql] @ git+https://…@v0.1.0"`, likewise
-    `[mysql]` (`PyMySQL[rsa]`, whose `rsa` extra brings the cryptography that
-    MySQL 8's `caching_sha2_password` auth needs). SQLite still needs nothing.
+    `[mysql]`. `postgresql` installs psycopg 3 through SQLAlchemy's own
+    `postgresql-psycopgbinary` extra, because psycopg 3 is what SQLAlchemy 2.1
+    loads for a plain `postgresql://` URL; `mysql` installs `PyMySQL[rsa]`,
+    whose `rsa` extra brings the cryptography that MySQL 8's
+    `caching_sha2_password` auth needs — so its URLs are `mysql+pymysql://`.
+    SQLite still needs nothing.
     The development tooling moves out of `[project.optional-dependencies] dev`
     into a PEP 735 `[dependency-groups] dev`, so it is no longer part of the
     installable surface: `uv sync --extra dev` becomes `uv sync --group dev`
@@ -68,7 +72,7 @@ changes must be reconstructed from revision history.*
     `make format-check` are folded into `make check` (ruff format `--check` +
     ruff lint + `ty check`), which `make test` now depends on. Coverage widens
     from `lazyset/` to the whole repo — `test/` is type-checked too. ty infers
-    the target version from `requires-python`, so it checks against the 3.10
+    the target version from `requires-python`, so it checks against the 3.11
     floor with no `[tool.ty]` config. Three call sites changed to satisfy ty's
     stricter narrowing: the `Mapping`-vs-`Iterable[Mapping]` shape dispatch in
     `insert`/`update`/`upsert` now goes through `_as_row()` (a `Mapping` is
@@ -90,7 +94,10 @@ changes must be reconstructed from revision history.*
     (SQLite/PostgreSQL) / `ON DUPLICATE KEY UPDATE` (MySQL) against a required
     unique-arbiter index named by `keys`. The 2.x UPDATE-rowcount-then-INSERT
     path is gone — without an arbiter there is nothing to conflict on, so it no
-    longer "updates every non-unique match".
+    longer "updates every non-unique match". A key repeated within one chunk
+    now resolves to its last occurrence on every backend: SQLAlchemy no longer
+    batches an `ON CONFLICT` insert into one multi-row statement, so the 2.0.0
+    note that PostgreSQL raises "cannot affect row a second time" is void.
   - **`insert_ignore` removed** *(breaking)*: it sat confusingly next to
     `upsert`, which already emits the same conflict-arbitrated statement — call
     `upsert(row, keys)` with a row carrying only the key columns to get
@@ -160,9 +167,14 @@ changes must be reconstructed from revision history.*
     `Table.create_column_by_example` — neither had a caller, an export, or a
     mention in the docs. The latter is one line: `create_column(name,
     db.types.guess(value))`.
-  - **SQLAlchemy 2.0 floor**: the declared requirement was `>=1.4.0`, but the
-    package has never imported under 1.4 (`from sqlalchemy import Connection` is
-    2.0-only) and CI only ever matrixed Python versions. Now `>=2.0,<3.0`.
+  - **SQLAlchemy 2.1, Python 3.11, psycopg 3** *(breaking)*: the declared
+    requirement was `sqlalchemy>=1.4.0`, but the package has never imported
+    under 1.4 (`from sqlalchemy import Connection` is 2.0-only). It is now
+    `>=2.1,<3.0`, which needs Python 3.11 (dataset 2.0.0 supported 3.10). The
+    floor follows the driver: SQLAlchemy 2.1 loads psycopg 3 for a plain
+    `postgresql://` URL, so a fresh install that resolved 2.1 next to the old
+    psycopg2 extra failed with `No module named 'psycopg'`. psycopg2 still
+    works through an explicit `postgresql+psycopg2://` URL.
   - **`create_index`**: a caller-supplied `mysql_length` is merged into the
     auto-computed prefix lengths instead of clobbering them.
   - **`drop_column`**: attempted on every backend — SQLite ≥ 3.35 succeeds — with

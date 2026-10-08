@@ -26,7 +26,7 @@ docs:		## Generate documentation.
 # .venv is never rebuilt. CI does not call this: its matrix already pins one
 # interpreter per job, and runs `uv run pytest` directly.
 test: check	## Run tests on the oldest and newest supported Python.
-	for v in 3.10 3.14; do UV_PROJECT_ENVIRONMENT=.venv-$$v $(RUN) --python $$v pytest || exit 1; done
+	for v in 3.11 3.14; do UV_PROJECT_ENVIRONMENT=.venv-$$v $(RUN) --python $$v pytest || exit 1; done
 
 clean:		## Clean up build artifacts.
 	rm -rf dist

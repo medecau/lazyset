@@ -21,8 +21,9 @@ examples for different database backends:
 # connecting to a SQLite database
 db = lazyset.connect("sqlite:///mydatabase.db")
 
-# connecting to a MySQL database with user and password
-db = lazyset.connect("mysql://user:password@localhost/mydatabase")
+# connecting to a MySQL database with user and password, through PyMySQL,
+# the driver the `mysql` extra installs (a bare mysql:// wants mysqlclient)
+db = lazyset.connect("mysql+pymysql://user:password@localhost/mydatabase")
 
 # connecting to a PostgreSQL database
 db = lazyset.connect("postgresql://scott:tiger@localhost:5432/mydatabase")

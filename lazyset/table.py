@@ -570,9 +570,11 @@ class Table:
         every non-unique match: without a unique arbiter there is nothing to
         conflict on. Backend-decided semantics: ``None``-valued keys always
         insert (NULLs are distinct); on MySQL the upsert fires on *any* unique
-        key and its default collation treats ``'A'``/``'a'`` as duplicates; on
-        PostgreSQL a key repeated *within* one chunk raises ("cannot affect
-        row a second time") — deduplicate or lower ``chunk_size``.
+        key and its default collation treats ``'A'``/``'a'`` as duplicates. A
+        key repeated *within* one chunk is applied row by row, so its last
+        occurrence wins on every backend (SQLAlchemy does not batch an
+        ``ON CONFLICT`` insert into one multi-row statement, which PostgreSQL
+        would reject with "cannot affect row a second time").
 
         Returns the number of rows submitted (single row = 1); the DB resolves
         the insert/update split, which executemany does not report.

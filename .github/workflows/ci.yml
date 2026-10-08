@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -109,11 +109,17 @@ jobs:
       # required, not decorative: actions/checkout leaves a shallow, detached
       # clone with no refs/remotes/origin/HEAD, which is what a bare
       # `git+file://…` resolves against, and it dies with "ambiguous argument".
+      # The install resolves fresh (no uv.lock), as a user's pip would, and
+      # with both extras: building an engine imports the driver SQLAlchemy
+      # picks for the documented URL without connecting, so an extra that
+      # ships a different driver than SQLAlchemy loads fails here.
       - name: Smoke-test the git install path
         run: >-
           uv run --no-project
-          --with "lazyset @ git+file://${{ github.workspace }}@${{ github.sha }}"
-          python -c "import lazyset; print(lazyset.__version__)"
+          --with "lazyset[postgresql,mysql] @ git+file://${{ github.workspace }}@${{ github.sha }}"
+          python -c "import lazyset; print(lazyset.__version__);
+          lazyset.connect('postgresql://u:p@localhost/db');
+          lazyset.connect('mysql+pymysql://u:p@localhost/db')"
 
   docs:
     runs-on: ubuntu-latest
