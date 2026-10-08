@@ -32,6 +32,7 @@ from sqlalchemy.sql.expression import (
 from lazyset.types import MYSQL_LENGTH_TYPES, ColumnType, Types
 from lazyset.util import (
     DatasetError,
+    FilterValue,
     MutableRow,
     NoSuchColumnError,
     QueryError,
@@ -654,8 +655,8 @@ class Table:
     def delete(
         self,
         *clauses: ColumnElement[bool],
-        where: Mapping[str, SQLValue] | None = None,
-        **filters: SQLValue,
+        where: Mapping[str, FilterValue] | None = None,
+        **filters: FilterValue,
     ) -> int:
         """Delete rows from the table.
 
@@ -847,7 +848,7 @@ class Table:
         return auto_create
 
     def _generate_clause(
-        self, column: str, op: str, value: SQLValue
+        self, column: str, op: str, value: FilterValue
     ) -> ColumnElement[bool]:
         col = self.table.c[column]
         match op:
@@ -899,7 +900,7 @@ class Table:
 
     def _args_to_clause(
         self,
-        args: MutableRow,
+        args: Mapping[str, FilterValue],
         clauses: Iterable[ColumnElement[bool]] = (),
     ) -> ColumnElement[bool]:
         clauses = list(clauses)
@@ -962,8 +963,8 @@ class Table:
     def _filter_clause(
         self,
         clauses: Sequence[ColumnElement[bool]],
-        where: Mapping[str, SQLValue] | None,
-        kwargs: Mapping[str, SQLValue],
+        where: Mapping[str, FilterValue] | None,
+        kwargs: Mapping[str, FilterValue],
     ) -> ColumnElement[bool]:
         """Validate filter kwargs and build the combined WHERE clause.
 
@@ -973,7 +974,7 @@ class Table:
         On a key collision the ``kwargs`` value wins.
         """
         self._reject_reserved_kwargs(kwargs)
-        args: MutableRow = dict(where) if where else {}
+        args: dict[str, FilterValue] = dict(where) if where else {}
         args.update(kwargs)
         return self._args_to_clause(args, clauses=clauses)
 
@@ -1226,8 +1227,8 @@ class Table:
         _offset: int = 0,
         _order_by: str | Sequence[str] | None = None,
         _streamed: bool = False,
-        where: Mapping[str, SQLValue] | None = None,
-        **kwargs: SQLValue,
+        where: Mapping[str, FilterValue] | None = None,
+        **kwargs: FilterValue,
     ) -> Results:
         """Perform a simple search on the table.
 
@@ -1293,8 +1294,8 @@ class Table:
         self,
         *args: ColumnElement[bool],
         _offset: int = 0,
-        where: Mapping[str, SQLValue] | None = None,
-        **kwargs: SQLValue,
+        where: Mapping[str, FilterValue] | None = None,
+        **kwargs: FilterValue,
     ) -> Row | None:
         """Get a single result from the table.
 
@@ -1329,8 +1330,8 @@ class Table:
     def count(
         self,
         *_clauses: ColumnElement[bool],
-        where: Mapping[str, SQLValue] | None = None,
-        **kwargs: SQLValue,
+        where: Mapping[str, FilterValue] | None = None,
+        **kwargs: FilterValue,
     ) -> int:
         """Return the count of results for the given filter set.
 
@@ -1359,8 +1360,8 @@ class Table:
         *args: str | ColumnElement[bool],
         _limit: int | None = None,
         _offset: int | None = 0,
-        where: Mapping[str, SQLValue] | None = None,
-        **kwargs: SQLValue,
+        where: Mapping[str, FilterValue] | None = None,
+        **kwargs: FilterValue,
     ) -> Results:
         """Return all the unique (distinct) values for the given ``columns``.
 

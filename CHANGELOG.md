@@ -190,7 +190,12 @@ changes must be reconstructed from revision history.*
     no preemptive dialect raise; a missing engine raises `DatasetError`.
   - **Exports**: `__all__` now includes `SchemaError`, `NoSuchColumnError`,
     `Results`, `Row`, `RowFactory`, `WriteRow`, `SQLValue`, `FilterValue`;
-    dropped `OutRow` and `row_factory`.
+    dropped `OutRow` and `row_factory`. `FilterValue` is the declared type of
+    every filter parameter — the `**kwargs` and `where=` of `find`,
+    `find_one`, `count`, `distinct` and `delete` — and its operator-dict arm
+    takes list/tuple/set operands. Those parameters were typed `SQLValue`, so
+    a type checker rejected the documented tuple/set IN filters and
+    `{"in": (...)}` / `{"between": [...]}` operands.
   - **Cross-backend correctness** (suite now verified on PostgreSQL 17 and
     MySQL 8, not just SQLite):
     - **`bytes` → binary column** *(behavior change)*: `Types.guess(bytes)` now

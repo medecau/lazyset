@@ -41,7 +41,7 @@ FilterValue = (
     | list[SQLValue]
     | tuple[SQLValue, ...]
     | set[SQLValue]
-    | dict[str, SQLValue]
+    | dict[str, SQLValue | list[SQLValue] | tuple[SQLValue, ...] | set[SQLValue]]
 )
 
 # Type alias for input rows (dict-like with SQL-compatible values)

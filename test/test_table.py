@@ -13,6 +13,7 @@ from sqlalchemy.sql.dml import Insert
 from sqlalchemy.types import BIGINT, TEXT, Unicode
 
 from lazyset import (
+    Database,
     DatasetError,
     NoSuchColumnError,
     QueryError,
@@ -489,6 +490,27 @@ def test_find_in_list_types(db, value, other):
     rows = list(tbl.find(v=[value]))
     assert len(rows) == 1, rows
     assert rows[0]["tag"] == "hit"
+
+
+def test_filter_value_forms(db: Database):
+    # The filter forms the guides document — tuple/set IN, operator dicts with
+    # a tuple or list operand, on every filtering method — must type-check as
+    # well as run: lazyset ships py.typed, so a signature narrower than
+    # FilterValue fails every caller's type checker. `make check` runs ty over
+    # this file; the annotation on `db` is what lets it see these calls (an
+    # unannotated fixture is Unknown to ty, and nothing gets checked).
+    tbl = db["filter_forms"]
+    tbl.insert([{"id": i, "country": c} for i, c in enumerate("abc", start=1)])
+    assert tbl.count(id=(1, 2)) == 2
+    assert tbl.count(id={1, 3}) == 2
+    assert tbl.count(country={"in": ("a", "b")}) == 2
+    assert tbl.count(id={"between": [1, 2]}) == 2
+    assert [r["id"] for r in tbl.find(country=("c",))] == [3]
+    assert [r["id"] for r in tbl.find(where={"id": (3,)})] == [3]
+    assert tbl.find_one(id={"notin": (1, 2)}) == {"id": 3, "country": "c"}
+    assert [r["country"] for r in tbl.distinct("country", id=(1, 2))] == ["a", "b"]
+    assert tbl.delete(where={"country": ("a", "b")}) == 2
+    assert tbl.delete(id={3}) == 1
 
 
 def test_find_unknown_operator_raises(table):
