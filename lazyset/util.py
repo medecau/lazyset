@@ -165,9 +165,11 @@ def normalize_column_name(name: str, max_bytes: int | None = None) -> str:
         # PostgreSQL truncates identifiers to max_bytes bytes server-side;
         # emulate so our in-memory name equals the stored one. SQLite and
         # MySQL have no byte limit here — the DB owns identifier length.
-        name = name[:max_bytes]  # fast char pre-cap
-        while len(name.encode("utf-8")) > max_bytes:  # codepoint-safe byte trim
-            name = name[:-1]
+        # Slice the bytes, and let decode drop a codepoint the slice split.
+        # The character pre-cap never cuts what the byte slice keeps (no
+        # codepoint is under a byte), but it keeps anything past the cap away
+        # from encode(), where a lone surrogate would raise.
+        name = name[:max_bytes].encode()[:max_bytes].decode(errors="ignore")
     return name
 
 
@@ -197,12 +199,8 @@ def normalize_table_name(name: str, max_bytes: int | None = None) -> str:
     if not len(name):
         raise SchemaError(f"Invalid table name: {name!r}")
     if max_bytes is not None:
-        # PostgreSQL truncates identifiers to max_bytes bytes server-side;
-        # emulate so our in-memory name equals the stored one. SQLite and
-        # MySQL have no byte limit here — the DB owns identifier length.
-        name = name[:max_bytes]  # fast char pre-cap
-        while len(name.encode("utf-8")) > max_bytes:  # codepoint-safe byte trim
-            name = name[:-1]
+        # The same byte truncation as normalize_column_name.
+        name = name[:max_bytes].encode()[:max_bytes].decode(errors="ignore")
     return name
 
 

@@ -45,15 +45,7 @@ class Types:
         self.json = JSONB if is_postgres else JSON
 
     def guess(self, sample: Any) -> ColumnType:
-        """Given a single sample, guess the column type for the field.
-
-        If the sample is an instance of an SQLAlchemy type, the type will be
-        used instead.
-        """
-        if isinstance(sample, TypeEngine):
-            return sample
-        if isinstance(sample, type) and issubclass(sample, TypeEngine):
-            return sample()
+        """Given a single sample, guess the column type for the field."""
         if isinstance(sample, bool):
             return self.boolean
         elif isinstance(sample, int):

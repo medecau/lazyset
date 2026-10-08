@@ -245,9 +245,7 @@ class Table:
         synced = self._sync_columns(row, auto_create, types=types)
         res = self.db._execute(self.table.insert().values(synced))
         self.db._auto_commit()
-        if res.inserted_primary_key is not None and len(res.inserted_primary_key) > 0:
-            return res.inserted_primary_key[0]
-        return None
+        return res.inserted_primary_key[0] if res.inserted_primary_key else None
 
     @staticmethod
     def _chunks(

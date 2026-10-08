@@ -824,6 +824,18 @@ def test_update_value_column_named_like_key(db):
     assert tbl.find_one(id=2)["_id"] == "keep-me-2"
 
 
+@pytest.mark.parametrize("bystander", ["k_0", "v_0", "v_1"])
+def test_update_many_column_named_like_bind(db, bystander):
+    # The executemany UPDATE binds key values as k_<i> and SET values as v_<j>.
+    # SQLAlchemy reserves every column's name for the SET clause, so a bind
+    # named like any existing column — even one not being updated — raises
+    # CompileError. The bind prefixes are chosen to avoid all column names.
+    tbl = db["update_many_bind_names"]
+    tbl.insert({"id": 1, bystander: "keep", "a": "old", "b": "old"})
+    assert tbl.update([{"id": 1, "a": "new", "b": "new"}], ["id"]) == 1
+    assert tbl.find_one(id=1) == {"id": 1, bystander: "keep", "a": "new", "b": "new"}
+
+
 def test_update_case_insensitive_key(db):
     # A case-mismatched key (['ID'] against an 'id' column) must resolve and
     # update the row, not KeyError on the exact-match column collection.

@@ -168,6 +168,14 @@ def test_normalize_column_name_byte_boundary():
     assert normalize_column_name(name) == name
 
 
+def test_normalize_names_lone_surrogate_past_cap():
+    # Whatever lies past the cap is cut before encoding: a lone surrogate
+    # there (unencodable as UTF-8) must not make a valid prefix raise.
+    name = "a" * 63 + "\ud800"
+    assert normalize_column_name(name, max_bytes=63) == "a" * 63
+    assert normalize_table_name(name, max_bytes=63) == "a" * 63
+
+
 # ---------------------------------------------------------------------------
 # normalize_column_key
 # ---------------------------------------------------------------------------
@@ -302,14 +310,6 @@ def test_guess_ordering():
     assert TYPES.guess(1) is BigInteger
     assert TYPES.guess(datetime(2020, 1, 1)) is DateTime
     assert TYPES.guess(date(2020, 1, 1)) is Date
-
-
-def test_guess_passthrough():
-    # An explicit SQLAlchemy type instance is returned as-is, and a type
-    # object is instantiated (documented behaviour of guess).
-    instance = BigInteger()
-    assert TYPES.guess(instance) is instance
-    assert isinstance(TYPES.guess(BigInteger), BigInteger)
 
 
 # ---------------------------------------------------------------------------

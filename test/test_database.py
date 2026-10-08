@@ -58,6 +58,11 @@ def test_tables(db, table):
     assert "weather" in db.tables, db.tables
 
 
+def test_ipython_key_completions(db, table):
+    # IPython's completer calls this hook for `db["<TAB>`; it offers table names.
+    assert db._ipython_key_completions_() == db.tables
+
+
 def test_contains(db, table):
     assert "weather" in db, db.tables
 

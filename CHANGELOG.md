@@ -168,7 +168,11 @@ changes must be reconstructed from revision history.*
   - **Removed dead helpers** *(breaking)*: `util.make_sqlite_url` and
     `Table.create_column_by_example` — neither had a caller, an export, or a
     mention in the docs. The latter is one line: `create_column(name,
-    db.types.guess(value))`.
+    db.types.guess(value))`. With it goes `Types.guess`'s passthrough, which
+    returned an SQLAlchemy type (or instantiated a type class) handed in as
+    the sample — it existed for `create_column_by_example`; a write's
+    `types=` already takes explicit types, so `guess` now only guesses from
+    values.
   - **SQLAlchemy 2.1, Python 3.11, psycopg 3** *(breaking)*: the declared
     requirement was `sqlalchemy>=1.4.0`, but the package has never imported
     under 1.4 (`from sqlalchemy import Connection` is 2.0-only). It is now
