@@ -1578,6 +1578,17 @@ def test_create_column_rejects_inert_kwargs(table, kwarg):
     assert not table.has_column("inert")
 
 
+@pytest.mark.parametrize("kwarg", ["unique", "index"])
+def test_create_column_rejects_constraint_kwargs(table, kwarg):
+    # ADD COLUMN runs before the constraint or index, and that second
+    # statement fails on some backends — SQLite cannot add a UNIQUE through
+    # ALTER TABLE, MySQL cannot index a TEXT column without a prefix length —
+    # leaving the column behind without it. create_index does both portably.
+    with pytest.raises(SchemaError, match="create_index"):
+        table.create_column("constrained", table.db.types.text, **{kwarg: True})
+    assert not table.has_column("constrained")
+
+
 def test_create_column_server_default_applies(db):
     # The working alternative: the database owns the default, so it survives.
     # string(255), not text: MySQL rejects a DEFAULT on a TEXT/BLOB column.

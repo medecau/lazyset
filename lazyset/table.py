@@ -1007,19 +1007,26 @@ class Table:
         passed to the constructor of `Column`, so options that the DDL carries
         — ``nullable``, ``server_default`` — can be set:
 
-            table.create_column('req', db.types.text, nullable=False)
             table.create_column('food', db.types.string(255),
                                 server_default='banana')
+            table.create_column('req', db.types.string(255), nullable=False,
+                                server_default='')
 
         (MySQL rejects a ``DEFAULT`` on a ``TEXT``/``BLOB`` column, so a
-        server-defaulted string column wants an explicit length.)
+        server-defaulted string column wants an explicit length. A ``NOT
+        NULL`` column added to a table that already has rows needs a
+        ``server_default`` to fill them; SQLite and PostgreSQL reject it
+        otherwise.)
 
         Python-side defaults (``default=`` / ``onupdate=``) are rejected: they
         live on the in-memory `Column`, which is discarded as soon as the table
         is re-reflected, so they would never fire. Use ``server_default`` (the
-        database applies it) instead. For a unique constraint use
-        `Table.create_index` with ``unique=True`` — passing ``unique=True``
-        here is silently skipped by alembic on some backends.
+        database applies it) instead. ``unique=`` and ``index=`` are rejected
+        too: they run as a second statement after ADD COLUMN, which fails on
+        some backends (SQLite cannot add a UNIQUE constraint by ALTER TABLE;
+        MySQL cannot index a ``TEXT`` column without a prefix length) and
+        leaves the column without them. Use `Table.create_index`, with
+        ``unique=True`` for a unique one — it works on every backend.
         """
         for inert in ("default", "onupdate"):
             if inert in kwargs:
@@ -1028,6 +1035,15 @@ class Table:
                     "Python-side default on a Column this table discards on the "
                     "next reflection, so it would never apply. Use "
                     f"server_default= to have the database own the {inert}."
+                )
+        for constraint in ("unique", "index"):
+            if constraint in kwargs:
+                raise SchemaError(
+                    f"create_column({name!r}) does not support {constraint}=: "
+                    "it runs after ADD COLUMN and fails on some backends, "
+                    "leaving the column without it. Create the column, then "
+                    "call create_index([name]"
+                    + (", unique=True)." if constraint == "unique" else ").")
                 )
         name = self._get_column_name(name)
         if self.has_column(name):

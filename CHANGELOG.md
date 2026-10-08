@@ -152,10 +152,12 @@ changes must be reconstructed from revision history.*
   - **`create_column` rejects inert kwargs** *(breaking)*: `default=` and
     `onupdate=` now raise `SchemaError`. They set a Python-side default on a
     `Column` object that is discarded when the table is re-reflected, so they
-    never applied; `server_default=` (which the database owns) does. Use
-    `create_index(cols, unique=True)` rather than `unique=True` here — alembic
-    silently skips it on some backends, and the warning that said so is no
-    longer suppressed.
+    never applied; `server_default=` (which the database owns) does. `unique=`
+    and `index=` raise `SchemaError` too: they run as a second statement after
+    ADD COLUMN, which fails on SQLite (`unique=True` — no UNIQUE by ALTER
+    TABLE) and on MySQL for a TEXT/BLOB column (no prefix length), leaving the
+    column behind without the constraint. Use `create_index(cols, unique=…)`,
+    which works on every backend.
   - **`Table.__repr__` is side-effect-free** *(fix)*: it read `self.table.name`,
     which reflects the table and raised `DatasetError` for a missing table under
     `auto_create=False`. Debuggers and logs call `repr` freely; it now reads the
