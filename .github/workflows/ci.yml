@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -107,7 +107,7 @@ jobs:
       matrix:
         include:
           - resolution: lowest-direct
-            python-version: "3.11"
+            python-version: "3.12"
           - resolution: highest
             python-version: "3.14"
     steps:

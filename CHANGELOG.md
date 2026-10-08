@@ -65,14 +65,14 @@ changes must be reconstructed from revision history.*
   - **Docs → pdoc** *(dev-facing)*: the Sphinx tree is replaced by pdoc — the
     API reference is generated from docstrings (`make docs` → `site/`) and
     published to GitHub Pages by CI, with the quickstart/queries guides folded
-    in as Markdown via pdoc's `.. include::`. `Types` is re-exported at the top
-    level (`lazyset.Types`) so it appears in the generated reference.
+    in as Markdown via pdoc's `.. include::`. The reference renders `__all__`
+    only — see **Public surface** below.
   - **mypy → ty** *(dev-facing)*: the type checker is now **ty** (Astral).
     `mypy` is dropped from the dev dependencies and `make lint` /
     `make format-check` are folded into `make check` (ruff format `--check` +
     ruff lint + `ty check`), which `make test` now depends on. Coverage widens
     from `lazyset/` to the whole repo — `test/` is type-checked too. ty infers
-    the target version from `requires-python`, so it checks against the 3.11
+    the target version from `requires-python`, so it checks against the 3.12
     floor with no `[tool.ty]` config. Three call sites changed to satisfy ty's
     stricter narrowing: the `Mapping`-vs-`Iterable[Mapping]` shape dispatch in
     `insert`/`update`/`upsert` now goes through `_as_row()` (a `Mapping` is
@@ -173,11 +173,12 @@ changes must be reconstructed from revision history.*
     the sample — it existed for `create_column_by_example`; a write's
     `types=` already takes explicit types, so `guess` now only guesses from
     values.
-  - **SQLAlchemy 2.1, Python 3.11, psycopg 3** *(breaking)*: the declared
+  - **SQLAlchemy 2.1, Python 3.12, psycopg 3** *(breaking)*: the declared
     requirement was `sqlalchemy>=1.4.0`, but the package has never imported
     under 1.4 (`from sqlalchemy import Connection` is 2.0-only). It is now
-    `>=2.1,<3.0`, which needs Python 3.11 (dataset 2.0.0 supported 3.10). The
-    floor follows the driver: SQLAlchemy 2.1 loads psycopg 3 for a plain
+    `>=2.1,<3.0`, which needs Python 3.11; lazyset itself needs 3.12, for the
+    `type` statements under **Public surface** (dataset 2.0.0 supported 3.10).
+    The floor follows the driver: SQLAlchemy 2.1 loads psycopg 3 for a plain
     `postgresql://` URL, so a fresh install that resolved 2.1 next to the old
     psycopg2 extra failed with `No module named 'psycopg'`. psycopg2 still
     works through an explicit `postgresql+psycopg2://` URL. The alembic floor
@@ -186,20 +187,35 @@ changes must be reconstructed from revision history.*
     that imports, but below 1.13.2 every ADD/DROP COLUMN trips a SQLAlchemy 2.1
     deprecation that a later SQLAlchemy turns into an error. CI's `dep-ranges`
     job now runs the suite with every runtime dependency at its floor (Python
-    3.11) and at its newest (3.14), so a range that stops working fails there
+    3.12) and at its newest (3.14), so a range that stops working fails there
     rather than on a user's fresh install.
   - **`create_index`**: a caller-supplied `mysql_length` is merged into the
     auto-computed prefix lengths instead of clobbering them.
   - **`drop_column`**: attempted on every backend — SQLite ≥ 3.35 succeeds — with
     no preemptive dialect raise; a missing engine raises `DatasetError`.
-  - **Exports**: `__all__` now includes `SchemaError`, `NoSuchColumnError`,
-    `Results`, `Row`, `RowFactory`, `WriteRow`, `SQLValue`, `FilterValue`;
-    dropped `OutRow` and `row_factory`. `FilterValue` is the declared type of
-    every filter parameter — the `**kwargs` and `where=` of `find`,
-    `find_one`, `count`, `distinct` and `delete` — and its operator-dict arm
-    takes list/tuple/set operands. Those parameters were typed `SQLValue`, so
-    a type checker rejected the documented tuple/set IN filters and
-    `{"in": (...)}` / `{"between": [...]}` operands.
+  - **Public surface** *(breaking)*: `lazyset` exports `connect`, `Database`,
+    `Table`, `Results` and the four exceptions (`DatasetError`, `QueryError`,
+    `SchemaError`, `NoSuchColumnError`), and the API reference renders nothing
+    else. The type aliases — `WriteRow`, `FilterValue`, `SQLValue`, `Row`
+    (2.0.0's top-level `OutRow`), `RowFactory` (also top-level in 2.0.0),
+    `ColumnType` — stay importable from `lazyset.util` / `lazyset.types` for
+    annotating against. They are now `type` statements (PEP 695, hence the
+    Python 3.12 floor), which keep their name at runtime: signatures and
+    type-checker messages read `WriteRow | Iterable[WriteRow]` where the
+    reference used to spell out the whole value union in every signature.
+    Internal state is underscore-prefixed — `Database.lock` / `local` /
+    `connections` and `Results.result_proxy` / `row_type` —
+    `Table.PRIMARY_DEFAULT` is gone (the default primary key is `"id"`), and the
+    `Table` / `Results` constructors are hidden from the reference: tables come
+    from `db[name]` / `db.table()`, results from `find()` / `distinct()` /
+    `query()`. The column type list moves from the `Types` class to the
+    `Database.types` docstring, and `Results.keys` is documented. `FilterValue`
+    is the declared type of every filter parameter — the `**kwargs` and
+    `where=` of `find`, `find_one`, `count`, `distinct` and `delete` — and its
+    operator-dict arm takes list/tuple/set operands. Those parameters were
+    typed `SQLValue`, so ty and pyright rejected the documented tuple/set IN
+    filters and `{"in": (...)}` / `{"between": [...]}` operands (mypy still
+    rejects the operator dicts).
   - **Cross-backend correctness** (suite now verified on PostgreSQL 17 and
     MySQL 8, not just SQLite):
     - **`bytes` → binary column** *(behavior change)*: `Types.guess(bytes)` now

@@ -271,8 +271,8 @@ def test_thread_connections_released():
         # After all threads finish and their transactions commit,
         # their connections should have been released. Only the main
         # thread's connection (from the setup insert) may remain.
-        assert len(db.connections) <= 1, (
-            f"Expected at most 1 connection, got {len(db.connections)}"
+        assert len(db._connections) <= 1, (
+            f"Expected at most 1 connection, got {len(db._connections)}"
         )
         db.close()
 
@@ -431,7 +431,7 @@ def test_result_iter_attributes():
     conn = db._executable
     rp = conn.execute(text("SELECT 1 AS a, 2 AS b"))
     it = Results(rp, connection=conn)
-    assert it.result_proxy is rp
+    assert it._result_proxy is rp
     assert it.keys == ["a", "b"]
     assert dict(next(it)) == {"a": 1, "b": 2}
     assert it._conn is conn
@@ -620,7 +620,7 @@ def test_close_atomic_with_concurrent_use(tmp_path):
     # a half-torn-down engine.
     assert "conn" not in result, "executable() got a connection from a closing DB"
     assert "error" in result
-    assert db.connections == {}
+    assert db._connections == {}
 
 
 def test_connection_closed_after_commit(db):

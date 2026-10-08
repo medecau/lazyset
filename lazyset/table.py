@@ -67,9 +67,11 @@ def _as_row(rows: "WriteRow | Iterable[WriteRow]") -> WriteRow:
 
 
 class Table:
-    """Represents a table in a database and exposes common operations."""
+    """Represents a table in a database and exposes common operations.
 
-    PRIMARY_DEFAULT = "id"
+    Get one with ``db[name]`` or `Database.table`.
+    """
+
     # The OR-of-AND existence check (update's count for key-only rows, which
     # have nothing to SET) builds one clause per distinct key; SQLite's default
     # expression-tree depth limit is 1000, so it is sub-batched at this size
@@ -85,7 +87,7 @@ class Table:
         primary_increment: bool | None = None,
         auto_create: bool = False,
     ):
-        """Initialise the table from database schema."""
+        """Internal: tables come from ``db[name]`` / `Database.table`. @private"""
         self.db = database
         self.name = normalize_table_name(
             table_name, max_bytes=database._max_ident_bytes
@@ -94,7 +96,7 @@ class Table:
         self._columns: dict[str, str] | None = None
         self._indexes: list[tuple[str, ...]] = []
         self._primary_id: str | Literal[False] = (
-            primary_id if primary_id is not None else self.PRIMARY_DEFAULT
+            primary_id if primary_id is not None else "id"
         )
         self._primary_type: ColumnType = (
             primary_type if primary_type is not None else Types.integer
@@ -115,7 +117,7 @@ class Table:
     def table(self) -> SQLATable:
         """Get a reference to the table, which may be reflected or created.
 
-        This property guarantees to return a non-None SQLATable instance.
+        This property guarantees to return a non-None SQLAlchemy ``Table``.
         If the table doesn't exist and auto_create is False, raises DatasetError.
         """
         # Snapshot _table into a local and branch/return on that: a concurrent
@@ -145,7 +147,7 @@ class Table:
         columns = self._columns
         if columns is not None:
             return columns
-        with self.db.lock:
+        with self.db._lock:
             # Re-check under the lock: another thread may have built it while
             # we waited.
             if self._columns is None:
@@ -347,7 +349,7 @@ class Table:
             # without this check MySQL would quietly corrupt the "keys is the
             # arbiter" contract. Raising here (before any SQL) also avoids
             # leaving PostgreSQL's transaction in an aborted state.
-            with self.db.lock:
+            with self.db._lock:
                 if not self._has_unique_index(norm_keys):
                     raise SchemaError(
                         f"{self.name!r} has no UNIQUE index or primary key on "
@@ -679,7 +681,7 @@ class Table:
 
     def _reflect_table(self) -> None:
         """Load the tables definition from the database."""
-        with self.db.lock:
+        with self.db._lock:
             self._columns = None
             self._indexes = []
             try:
@@ -724,7 +726,7 @@ class Table:
             if not self._auto_create:
                 raise DatasetError(f"Table does not exist: {self.name}")
             # Keep the lock scope small because this is run very often.
-            with self.db.lock:
+            with self.db._lock:
                 # Re-check under the lock: another thread may have created the
                 # table (possibly with a different column set) while we waited.
                 # Add our columns to it rather than overwrite _table with a
@@ -762,13 +764,13 @@ class Table:
                 self._table = table
                 self._columns = None
         elif len(columns):
-            with self.db.lock:
+            with self.db._lock:
                 self._add_missing_columns_locked(columns)
 
     def _add_missing_columns_locked(self, columns: Sequence[Column[Any]]) -> None:
         """Reflect the table and ADD COLUMN for any column not yet present.
 
-        The caller must hold ``self.db.lock``. Shared by the ordinary
+        The caller must hold ``self.db._lock``. Shared by the ordinary
         add-column path and by the create-race loser, whose table another
         thread has already created under the lock.
         """
@@ -1002,7 +1004,7 @@ class Table:
             table.create_column('created_at', db.types.datetime)
 
         `type` corresponds to an SQLAlchemy type, most easily referenced
-        through ``db.types`` (see `Types`). Additional keyword arguments are
+        through ``db.types`` (see `Database.types`). Additional keyword arguments are
         passed to the constructor of `Column`, so options that the DDL carries
         — ``nullable``, ``server_default`` — can be set:
 
@@ -1063,7 +1065,7 @@ class Table:
         if self.db.engine is None:
             raise DatasetError("Cannot drop columns when no engine is available.")
         name = self._get_column_name(name)
-        with self.db.lock:
+        with self.db._lock:
             if not self.exists or not self.has_column(name):
                 log.debug("Column does not exist: %s", name)
                 return
@@ -1079,7 +1081,7 @@ class Table:
 
         Deletes both the schema and all the contents within it.
         """
-        with self.db.lock:
+        with self.db._lock:
             if self.exists:
                 self._threading_warn()
                 with self.db._rollback_on_error() as conn:
@@ -1091,7 +1093,7 @@ class Table:
 
     def has_index(self, columns: Iterable[str]) -> bool:
         """Check if an index exists to cover the given ``columns``."""
-        with self.db.lock:
+        with self.db._lock:
             if not self.exists:
                 return False
             columns_ = tuple(
@@ -1121,7 +1123,7 @@ class Table:
         prefix and caches non-unique indexes, either of which would
         false-positive here — a plain ``ix_`` index on the same columns must
         not satisfy the upsert arbiter requirement. The caller must hold
-        ``self.db.lock``.
+        ``self.db._lock``.
         """
         if not self.exists:
             return False
@@ -1163,7 +1165,7 @@ class Table:
         columns = list(
             dict.fromkeys(self._get_column_name(c) for c in ensure_strings(columns))
         )
-        with self.db.lock:
+        with self.db._lock:
             if not self.exists:
                 raise DatasetError("Table has not been created yet.")
 

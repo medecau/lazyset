@@ -31,37 +31,28 @@ from typing import Any
 
 from lazyset.database import Database
 from lazyset.table import Table
-from lazyset.types import Types
 from lazyset.util import (
     DatasetError,
-    FilterValue,
     NoSuchColumnError,
     QueryError,
     Results,
-    Row,
     RowFactory,
     SchemaError,
-    SQLValue,
-    WriteRow,
 )
 
 # shut up useless SA warning:
 warnings.filterwarnings("ignore", "Unicode type received non-unicode bind param value.")
 
+# The public surface, and all that pdoc renders. The type aliases stay in
+# lazyset.util / lazyset.types for anyone annotating against them.
 __all__ = [
     "Database",
     "DatasetError",
-    "FilterValue",
     "NoSuchColumnError",
     "QueryError",
     "Results",
-    "Row",
-    "RowFactory",
-    "SQLValue",
     "SchemaError",
     "Table",
-    "Types",
-    "WriteRow",
     "connect",
 ]
 __version__ = "0.1.0"

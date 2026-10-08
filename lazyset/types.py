@@ -25,7 +25,8 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.types import TypeEngine, _Binary
 
 MYSQL_LENGTH_TYPES = (String, _Binary)
-ColumnType = TypeEngine[Any] | type[TypeEngine[Any]]
+# A ``type`` statement so signatures print ``ColumnType``, as in lazyset.util.
+type ColumnType = TypeEngine[Any] | type[TypeEngine[Any]]
 
 
 class Types:

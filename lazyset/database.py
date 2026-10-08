@@ -62,9 +62,9 @@ class Database:
 
         parsed_url = urlparse(url)
 
-        self.lock = threading.RLock()
-        self.local = threading.local()
-        self.connections: dict[int, Connection] = {}
+        self._lock = threading.RLock()
+        self._local = threading.local()
+        self._connections: dict[int, Connection] = {}
 
         if schema is None:
             # SQLAlchemy already parsed the query string; a repeated key
@@ -104,6 +104,10 @@ class Database:
             event.listen(self.engine, "connect", _run_on_connect)
 
         self.types = Types(is_postgres=self.is_postgres)
+        """Column types for ``primary_type`` and `Table.create_column`:
+        ``integer``, ``bigint``, ``float``, ``boolean``, ``string`` (give it a
+        length, ``db.types.string(255)``), ``text``, ``binary``, ``date``,
+        ``datetime`` and ``json`` (JSONB on PostgreSQL)."""
         self.url = url
         self.row_type: RowFactory = row_type
         self.auto_create = auto_create
@@ -112,13 +116,13 @@ class Database:
     @property
     def _executable(self) -> Connection:
         """Connection against which statements will be executed."""
-        with self.lock:
+        with self._lock:
             tid = threading.get_ident()
-            if tid not in self.connections:
+            if tid not in self._connections:
                 if self.engine is None:
                     raise DatasetError("Database is closed")
-                self.connections[tid] = self.engine.connect()
-            return self.connections[tid]
+                self._connections[tid] = self.engine.connect()
+            return self._connections[tid]
 
     @property
     def _op(self) -> Operations:
@@ -139,15 +143,15 @@ class Database:
     @property
     def in_transaction(self) -> bool:
         """Check if this database is in a transactional context."""
-        if not hasattr(self.local, "tx"):
+        if not hasattr(self._local, "tx"):
             return False
-        return len(self.local.tx) > 0
+        return len(self._local.tx) > 0
 
     def _release_connection(self) -> None:
         """Close and release the current thread's connection back to the pool."""
-        with self.lock:
+        with self._lock:
             tid = threading.get_ident()
-            conn = self.connections.pop(tid, None)
+            conn = self._connections.pop(tid, None)
             if conn is not None:
                 conn.close()
 
@@ -161,7 +165,7 @@ class Database:
         short-circuiting on a stale _columns dict, so a rolled-back
         in-transaction ADD COLUMN would keep reading True.
         """
-        with self.lock:
+        with self._lock:
             for table in list(self._tables.values()):
                 table._table = None
                 table._columns = None
@@ -231,24 +235,24 @@ class Database:
 
         No data will be written until the transaction has been committed.
         """
-        if not hasattr(self.local, "tx"):
-            self.local.tx = []
+        if not hasattr(self._local, "tx"):
+            self._local.tx = []
         if not self._executable.in_transaction():
             # No active transaction; start an explicit one (master semantics).
-            self.local.tx.append(self._executable.begin())
+            self._local.tx.append(self._executable.begin())
         else:
             # An autobegin transaction is already active (e.g., from a read);
             # track the nesting depth without starting a second transaction.
-            self.local.tx.append(True)
+            self._local.tx.append(True)
 
     def commit(self) -> None:
         """Commit the current transaction.
 
         Make all statements executed since the transaction was begun permanent.
         """
-        if hasattr(self.local, "tx") and self.local.tx:
-            tx = self.local.tx.pop()
-            if not self.local.tx:
+        if hasattr(self._local, "tx") and self._local.tx:
+            tx = self._local.tx.pop()
+            if not self._local.tx:
                 if tx is not True:
                     tx.commit()
                 else:
@@ -260,9 +264,9 @@ class Database:
 
         Discard all statements executed since the transaction was begun.
         """
-        if hasattr(self.local, "tx") and self.local.tx:
-            tx = self.local.tx.pop()
-            if not self.local.tx:
+        if hasattr(self._local, "tx") and self._local.tx:
+            tx = self._local.tx.pop()
+            if not self._local.tx:
                 if tx is not True:
                     tx.rollback()
                 else:
@@ -295,10 +299,10 @@ class Database:
         This should be called when the database is no longer needed,
         especially in multi-threaded or connection-pooled setups.
         """
-        with self.lock:
-            for conn in self.connections.values():
+        with self._lock:
+            for conn in self._connections.values():
                 conn.close()
-            self.connections.clear()
+            self._connections.clear()
             # Dispose and null the engine under the same lock so a concurrent
             # _executable()/table() can't slip in and build a connection
             # on a half-torn-down engine (orphaned connection).
@@ -375,7 +379,7 @@ class Database:
                 "Text-based primary_type support is dropped, use db.types."
             )
         table_name = normalize_table_name(table_name, max_bytes=self._max_ident_bytes)
-        with self.lock:
+        with self._lock:
             cached = self._tables.get(table_name)
             if cached is not None:
                 self._reject_primary_conflict(

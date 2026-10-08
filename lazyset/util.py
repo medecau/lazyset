@@ -14,7 +14,9 @@ from typing import Any
 from sqlalchemy import Connection, CursorResult, RowMapping
 from sqlalchemy.exc import ResourceClosedError
 
-# Type definitions for SQL values and rows
+# Type definitions for SQL values and rows. The ones that appear in public
+# signatures are ``type`` statements, which keep their name at runtime, so pdoc
+# and type-checker messages print ``WriteRow`` instead of the expanded union.
 SQLPlainValue = (
     None  # NULL
     | bool  # BOOLEAN
@@ -28,7 +30,7 @@ SQLPlainValue = (
 )
 # A single value that can be written to a column (JSON columns accept a
 # dict/list of plain values).
-SQLValue = (
+type SQLValue = (
     SQLPlainValue
     | dict[str, SQLPlainValue]  # JSON, JSONB
     | list[SQLPlainValue]  # JSON arrays
@@ -36,7 +38,7 @@ SQLValue = (
 # A value accepted by a find()/count()/delete()/where filter: a plain
 # equality value, a membership sequence (turned into an ``IN`` query), or a
 # ``{operator: value}`` mapping (see Table._generate_clause).
-FilterValue = (
+type FilterValue = (
     SQLValue
     | list[SQLValue]
     | tuple[SQLValue, ...]
@@ -45,12 +47,12 @@ FilterValue = (
 )
 
 # Type alias for input rows (dict-like with SQL-compatible values)
-WriteRow = Mapping[str, SQLValue]
+type WriteRow = Mapping[str, SQLValue]
 # Mutable row dict — used where rows are built up or mutated in place
 MutableRow = dict[str, SQLValue]
 # A row read back from the database (values already converted by the driver).
-Row = Mapping[str, Any]
-RowFactory = Callable[[Iterable[tuple[str, Any]]], Row]
+type Row = Mapping[str, Any]
+type RowFactory = Callable[[Iterable[tuple[str, Any]]], Row]
 
 
 class DatasetError(Exception):
@@ -77,6 +79,8 @@ class NoSuchColumnError(SchemaError):
 class Results(Iterator[Row]):
     """Wrap a SQLAlchemy result as an iterator of dict-like rows.
 
+    `Table.find`, `Table.distinct` and `Database.query` return one.
+
     Rows are pulled from the result lazily, one at a time, so iterating a
     large table never materializes it in memory.
 
@@ -88,17 +92,21 @@ class Results(Iterator[Row]):
                 ...
     """
 
+    keys: list[str]
+    """Column names of the result, in order."""
+
     def __init__(
         self,
         result_proxy: CursorResult[Any] | None,
         row_type: RowFactory = dict,
         connection: Connection | None = None,
     ):
-        self.row_type = row_type
-        self.result_proxy = result_proxy
+        """Internal: built by `Table.find` and `Database.query`. @private"""
+        self._row_type = row_type
+        self._result_proxy = result_proxy
         self._conn = connection
         if result_proxy is None:
-            self.keys: list[str] = []
+            self.keys = []
             self._iter: Iterator[RowMapping] = iter([])
         else:
             try:
@@ -112,7 +120,7 @@ class Results(Iterator[Row]):
 
     def __next__(self) -> Row:
         try:
-            return self.row_type(next(self._iter).items())
+            return self._row_type(next(self._iter).items())
         except StopIteration:
             self.close()
             raise
@@ -127,8 +135,9 @@ class Results(Iterator[Row]):
         self.close()
 
     def close(self) -> None:
-        if self.result_proxy is not None:
-            self.result_proxy.close()
+        """Release the result and its connection; exhausting the rows does this too."""
+        if self._result_proxy is not None:
+            self._result_proxy.close()
         if self._conn is not None:
             self._conn.close()
             self._conn = None

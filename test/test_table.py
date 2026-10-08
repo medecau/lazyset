@@ -1324,7 +1324,7 @@ def test_table_property_returns_table_not_none(db):
 
 def test_column_keys_cached_read_takes_no_lock(db):
     # _column_keys is read once per cell in the bulk write loops, so a warm
-    # (already-built) read must not re-acquire db.lock. The map is built once
+    # (already-built) read must not re-acquire db._lock. The map is built once
     # under the lock and published whole; a cached read returns a snapshot
     # lock-free, like the `table` property's concurrency snapshot.
     tbl = db["col_keys_lock"]
@@ -1344,13 +1344,13 @@ def test_column_keys_cached_read_takes_no_lock(db):
         def __exit__(self, *exc):
             return self._inner.__exit__(*exc)
 
-    counter = CountingLock(db.lock)
-    db.lock = counter
+    counter = CountingLock(db._lock)
+    db._lock = counter
     try:
         for _ in range(5):
             _ = tbl._column_keys
     finally:
-        db.lock = counter._inner
+        db._lock = counter._inner
 
     assert counter.enters == 0, counter.enters
 
@@ -1384,7 +1384,7 @@ def test_sync_table_concurrent_different_columns(tmp_path):
         def synced_reflect(self):
             # First reflect per thread: sync at the barrier so both threads see
             # _table=None and pass the lock-free create check before either
-            # grabs the lock (_reflect_table releases db.lock before we wait).
+            # grabs the lock (_reflect_table releases db._lock before we wait).
             if not getattr(reflected, "done", False):
                 reflected.done = True
                 original_reflect(self)
@@ -1399,7 +1399,7 @@ def test_sync_table_concurrent_different_columns(tmp_path):
                 first = not warn_calls
                 warn_calls.append(1)
             if first:
-                # The winner holds db.lock but hasn't created yet; keep holding
+                # The winner holds db._lock but hasn't created yet; keep holding
                 # so the loser blocks on the lock with _table still read as None
                 # (the stale decision the create-block re-check must catch).
                 holds_lock.set()
