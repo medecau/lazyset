@@ -9,7 +9,7 @@ via `Database.query`, and hands out tables through ``db[name]`` /
 import contextlib
 import logging
 import threading
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import Any, Literal
 from urllib.parse import urlparse
 
@@ -178,6 +178,34 @@ class Database:
         if not self.in_transaction:
             self._executable.commit()
 
+    @contextlib.contextmanager
+    def _rollback_on_error(
+        self, conn: Connection | None = None
+    ) -> Iterator[Connection]:
+        """Yield a connection, rolling it back if the block raises.
+
+        On any error outside an explicit transaction, roll the connection back
+        before re-raising: PostgreSQL aborts the whole transaction on error and
+        refuses every later statement until a rollback, so without this a
+        *caught* error — a failed write, a SELECT on a column that vanished, a
+        rejected ALTER TABLE — would poison the next operation on the same
+        thread. Mirrors `Database._auto_commit` (the success path); inside an
+        explicit transaction the user (or ``with db:``) owns rollback, so this
+        stays out of the way.
+
+        Every statement except catalog reads (reflection, the inspector) runs
+        under it: DML and SELECTs through `Database._execute`, DDL that
+        SQLAlchemy or alembic executes itself by wrapping the call.
+        """
+        connection = conn if conn is not None else self._executable
+        try:
+            yield connection
+        except Exception:
+            if not self.in_transaction:
+                with contextlib.suppress(Exception):
+                    connection.rollback()
+            raise
+
     def _execute(
         self,
         statement: Executable,
@@ -185,16 +213,9 @@ class Database:
         *,
         conn: Connection | None = None,
     ) -> CursorResult[Any]:
-        """Execute a statement, recovering the connection on error.
+        """Execute a statement under `Database._rollback_on_error`.
 
-        Every statement lazyset issues goes through here. On any error outside
-        an explicit transaction, roll the connection back before re-raising:
-        PostgreSQL aborts the whole transaction on error and refuses every
-        later statement until a rollback, so without this a *caught* error —
-        a failed write, or a SELECT on a column that vanished — would poison
-        the next operation on the same thread. Mirrors `Database._auto_commit`
-        (the success path); inside an explicit transaction the user (or ``with
-        db:``) owns rollback, so this stays out of the way.
+        Every DML statement and query lazyset issues goes through here.
 
         ``conn`` overrides the thread's connection. ``find(_streamed=True)``
         runs on its own `sqlalchemy.Connection` with its own transaction — that
@@ -202,14 +223,8 @@ class Database:
         writing through the main connection — so it must be executed, and
         rolled back, on that connection rather than the thread's.
         """
-        connection = conn if conn is not None else self._executable
-        try:
+        with self._rollback_on_error(conn) as connection:
             return connection.execute(statement, parameters)
-        except Exception:
-            if not self.in_transaction:
-                with contextlib.suppress(Exception):
-                    connection.rollback()
-            raise
 
     def begin(self) -> None:
         """Enter a transaction explicitly.

@@ -554,7 +554,7 @@ class Table:
 
         With ``auto_create`` on (the default) that UNIQUE arbiter index is
         created for you (a no-op when a matching one exists), raising
-        `SchemaError` if the table already
+        `DatasetError` if the table already
         holds rows with duplicate ``keys`` values. With ``auto_create=False``
         the arbiter must already exist, or the database raises.
 
@@ -752,15 +752,16 @@ class Table:
                     # creation until the first column is added (dataset
                     # creates tables lazily anyway).
                     return
-                # Create first, publish after: assigning _table before the
-                # CREATE left a poisoned cache behind a failed statement
-                # (permissions, disk full, MySQL metadata-lock timeout) —
-                # `exists` stuck True with no table in the DB. On failure
-                # _table stays None and the next call retries.
-                table.create(self.db._executable, checkfirst=True)
+                # Create and commit first, publish after: assigning _table
+                # before the CREATE left a poisoned cache behind a failed
+                # statement (permissions, disk full, MySQL metadata-lock
+                # timeout) — `exists` stuck True with no table in the DB. On
+                # failure _table stays None and the next call retries.
+                with self.db._rollback_on_error() as conn:
+                    table.create(conn, checkfirst=True)
+                    self.db._auto_commit()
                 self._table = table
                 self._columns = None
-                self.db._auto_commit()
         elif len(columns):
             with self.db.lock:
                 self._add_missing_columns_locked(columns)
@@ -774,9 +775,10 @@ class Table:
         """
         self._reflect_table()
         self._threading_warn()
-        for column in columns:
-            if not self.has_column(column.name):
-                self.db._op.add_column(self.name, column, schema=self.db.schema)
+        with self.db._rollback_on_error():
+            for column in columns:
+                if not self.has_column(column.name):
+                    self.db._op.add_column(self.name, column, schema=self.db.schema)
         self._reflect_table()
         self.db._auto_commit()
 
@@ -1052,7 +1054,8 @@ class Table:
                 return
 
             self._threading_warn()
-            self.db._op.drop_column(self.table.name, name, schema=self.table.schema)
+            with self.db._rollback_on_error():
+                self.db._op.drop_column(self.table.name, name, schema=self.table.schema)
             self._reflect_table()
             self.db._auto_commit()
 
@@ -1064,7 +1067,8 @@ class Table:
         with self.db.lock:
             if self.exists:
                 self._threading_warn()
-                self.table.drop(self.db._executable, checkfirst=True)
+                with self.db._rollback_on_error() as conn:
+                    self.table.drop(conn, checkfirst=True)
                 self._table = None
                 self._columns = None
                 self.db._tables.pop(self.name, None)
@@ -1184,23 +1188,19 @@ class Table:
                     kw["unique"] = True
 
                 idx = Index(name, *columns_, **kw)
-                if unique:
+                try:
+                    with self.db._rollback_on_error() as conn:
+                        idx.create(conn)
+                except IntegrityError as exc:
+                    if not unique:
+                        raise
                     # Existing duplicate key values make the arbiter index
                     # impossible to build; surface that clearly, never swallow.
-                    try:
-                        idx.create(self.db._executable)
-                    except IntegrityError as exc:
-                        if not self.db.in_transaction:
-                            # Leave the autobegun transaction usable (on
-                            # PostgreSQL it is aborted until rolled back).
-                            self.db._executable.rollback()
-                        raise DatasetError(
-                            f"Cannot create a unique index on {columns!r}: "
-                            f"table {self.name!r} already contains rows with "
-                            "duplicate values for these columns."
-                        ) from exc
-                else:
-                    idx.create(self.db._executable)
+                    raise DatasetError(
+                        f"Cannot create a unique index on {columns!r}: "
+                        f"table {self.name!r} already contains rows with "
+                        "duplicate values for these columns."
+                    ) from exc
                 self.db._auto_commit()
 
     def find(

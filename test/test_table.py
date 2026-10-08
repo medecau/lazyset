@@ -1594,6 +1594,25 @@ def test_create_column_existing_logs_debug(table, caplog):
     assert "Column exists" in caplog.text
 
 
+def test_failed_ddl_leaves_connection_usable(db):
+    # A failed DDL statement must roll the connection back like any other:
+    # PostgreSQL aborts the transaction on error and refuses every later
+    # statement until a rollback, so the next write used to fail with
+    # InFailedSqlTransaction. Adding a NOT NULL column with no default to a
+    # non-empty table fails on SQLite and PostgreSQL; MySQL fills in an
+    # implicit default and accepts it.
+    tbl = db["failed_ddl"]
+    tbl.insert({"a": 1})
+    try:
+        tbl.create_column("req", db.types.integer, nullable=False)
+    except SQLAlchemyError:
+        assert not db.is_mysql
+    else:
+        assert db.is_mysql
+    tbl.insert({"a": 2, "req": 5})
+    assert tbl.count() == 2
+
+
 def test_sync_columns_auto_create_false_and_explicit_types(db):
     tbl = db["sync_columns_test"]
     tbl.insert({"id": 1})

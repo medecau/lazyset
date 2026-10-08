@@ -94,6 +94,40 @@ jobs:
           DATABASE_URL: "mysql+pymysql://mysql:mysql@127.0.0.1:${{ job.services.mysql.ports['3306'] }}/dataset?charset=utf8"
         run: uv run pytest
 
+  # The other test jobs install uv.lock, which proves one pinned set works. A
+  # user's pip resolves the declared ranges instead, so test both ends of
+  # them: every direct runtime dependency at its floor on the oldest Python,
+  # and at its newest on the newest. `uv pip`, not `uv lock`: the universal
+  # lock only picks versions every supported Python can install, so it can
+  # sit below what a newer interpreter resolves to.
+  dep-ranges:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - resolution: lowest-direct
+            python-version: "3.11"
+          - resolution: highest
+            python-version: "3.14"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+      - run: uv venv
+      - name: Runtime dependencies at the ${{ matrix.resolution }} end
+        run: uv pip install --resolution ${{ matrix.resolution }} -r pyproject.toml
+      # Tooling and drivers at their newest; without --upgrade this leaves the
+      # runtime pins from the previous step alone.
+      - run: uv pip install --group dev
+      - run: uv pip list
+      - name: Run SQLite tests
+        env:
+          DATABASE_URL: "sqlite:///:memory:"
+        run: uv run --no-sync pytest
+
   build:
     runs-on: ubuntu-latest
     steps:

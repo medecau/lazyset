@@ -174,7 +174,14 @@ changes must be reconstructed from revision history.*
     floor follows the driver: SQLAlchemy 2.1 loads psycopg 3 for a plain
     `postgresql://` URL, so a fresh install that resolved 2.1 next to the old
     psycopg2 extra failed with `No module named 'psycopg'`. psycopg2 still
-    works through an explicit `postgresql+psycopg2://` URL.
+    works through an explicit `postgresql+psycopg2://` URL. The alembic floor
+    moves from `>=0.6.2` — which a floor-version install resolved to, and which
+    fails at import against SQLAlchemy 2 — to `>=1.13.2`: 1.7.2 is the first
+    that imports, but below 1.13.2 every ADD/DROP COLUMN trips a SQLAlchemy 2.1
+    deprecation that a later SQLAlchemy turns into an error. CI's `dep-ranges`
+    job now runs the suite with every runtime dependency at its floor (Python
+    3.11) and at its newest (3.14), so a range that stops working fails there
+    rather than on a user's fresh install.
   - **`create_index`**: a caller-supplied `mysql_length` is merged into the
     auto-computed prefix lengths instead of clobbering them.
   - **`drop_column`**: attempted on every backend — SQLite ≥ 3.35 succeeds — with
@@ -195,15 +202,17 @@ changes must be reconstructed from revision history.*
       a duplicate — so the "keys is the arbiter" contract is now guaranteed on
       every backend. (Raising before execution also avoids leaving PostgreSQL's
       transaction aborted.)
-    - **Auto-rollback on statement error** *(fix)*: every statement goes through
-      one choke point (`Database._execute`) that rolls the connection back
-      before re-raising, when the error happens outside an explicit transaction.
+    - **Auto-rollback on statement error** *(fix)*: every statement except
+      catalog reads runs under one guard (`Database._rollback_on_error`, which
+      `Database._execute` wraps) that rolls the connection back before
+      re-raising, when the error happens outside an explicit transaction.
       PostgreSQL aborts the whole transaction on any error and refuses later
-      statements until a rollback, so a caught error — a failed write, or a
-      `find()` on a column that vanished — used to poison the next operation on
-      that thread. `find`/`count`/`query` called `connection.execute` directly
-      and had no recovery at all. Inside an explicit transaction the user still
-      owns rollback.
+      statements until a rollback, so a caught error — a failed write, a
+      `find()` on a column that vanished, or a rejected `create_column` — used
+      to poison the next operation on that thread. `find`/`count`/`query`
+      called `connection.execute` directly, and the DDL paths (CREATE/DROP
+      TABLE, ADD/DROP COLUMN through alembic, CREATE INDEX) bypassed recovery
+      entirely. Inside an explicit transaction the user still owns rollback.
     - **Rowcount fallbacks removed**: `update()` and `delete()` used to probe
       `supports_sane_rowcount` and re-COUNT when it was False, and the chunked
       `update()` re-queried the matched keys when `supports_sane_multi_rowcount`
