@@ -204,12 +204,15 @@ changes must be reconstructed from revision history.*
       that thread. `find`/`count`/`query` called `connection.execute` directly
       and had no recovery at all. Inside an explicit transaction the user still
       owns rollback.
-    - **Single-row rowcount fallbacks removed**: `update()` and `delete()` used
-      to probe `supports_sane_rowcount` and re-COUNT when it was False. It holds
-      on SQLite, PostgreSQL and MySQL, so the fallback was dead code on every
-      supported backend; both now return `rp.rowcount`. The *multi*-row fallback
-      in the chunked update path stays — `supports_sane_multi_rowcount` is
-      genuinely False on psycopg2.
+    - **Rowcount fallbacks removed**: `update()` and `delete()` used to probe
+      `supports_sane_rowcount` and re-COUNT when it was False, and the chunked
+      `update()` re-queried the matched keys when `supports_sane_multi_rowcount`
+      was False. Both hold on SQLite, PostgreSQL (psycopg 3, and psycopg2 in its
+      default `executemany_mode` — its class attribute says False, but
+      `initialize()` sets it True) and MySQL, so both fallbacks were dead code
+      on every supported backend; `update()` and `delete()` now return
+      `rp.rowcount`. lazyset requires a driver with sane rowcounts — psycopg2
+      with `executemany_mode="values_plus_batch"` does not qualify.
 
 * **2.0.0**: Major modernization and type annotations
   - **Type annotations**: Full `mypy --strict` compliance across all modules

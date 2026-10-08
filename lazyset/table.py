@@ -69,8 +69,8 @@ class Table:
     """Represents a table in a database and exposes common operations."""
 
     PRIMARY_DEFAULT = "id"
-    # The OR-of-AND existence check (update's non-sane-multi-rowcount
-    # fallback) builds one clause per distinct key; SQLite's default
+    # The OR-of-AND existence check (update's count for key-only rows, which
+    # have nothing to SET) builds one clause per distinct key; SQLite's default
     # expression-tree depth limit is 1000, so it is sub-batched at this size
     # independently of the caller's chunk_size.
     _EXISTS_CHECK_BATCH = 500
@@ -382,10 +382,7 @@ class Table:
         the row. New value columns are created per ``auto_create``/``types``,
         as in `Table.insert`.
 
-        Returns the number of rows matched by ``keys``. On drivers with no
-        reliable executemany rowcount (notably psycopg2 on PostgreSQL) the
-        iterable form returns the number of *distinct key tuples* matched,
-        which is lower than the summed count when input rows repeat a key.
+        Returns the number of rows matched by ``keys``.
         """
         if isinstance(rows, Mapping):
             return self._update_one(_as_row(rows), keys, auto_create, types)
@@ -530,13 +527,8 @@ class Table:
                     }
                 )
             )
-            rp = self.db._execute(stmt, group_rows)
-            if rp.supports_sane_multi_rowcount():
-                updated += rp.rowcount
-            else:
-                # psycopg2 (PostgreSQL) reports no reliable executemany
-                # rowcount: count the distinct matched key tuples instead.
-                updated += count_matched(group_rows)
+            # lazyset requires a dialect with sane executemany rowcounts.
+            updated += self.db._execute(stmt, group_rows).rowcount
         self.db._auto_commit()
         return updated
 
